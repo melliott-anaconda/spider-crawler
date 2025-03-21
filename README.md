@@ -18,7 +18,7 @@ A powerful, adaptive web crawler for keyword searching and content extraction wi
 ### Using Conda
 
 ```bash
-conda install -c your-channel spider-crawler
+conda install -c michael-elliott spider-crawler
 ```
 
 ### From Source
