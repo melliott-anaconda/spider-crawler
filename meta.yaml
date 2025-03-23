@@ -1,5 +1,5 @@
 {% set name = "spider-crawler" %}
-{% set version = "1.0.0" %}
+{% set version = "1.1.0" %}
 
 package:
   name: {{ name|lower }}
@@ -13,7 +13,6 @@ build:
   number: 0
   script: |
     {{ PYTHON }} -m pip install . -vv
-    {{ PYTHON }} -m pip install selenium-stealth>=1.0.6 undetected-chromedriver>=3.4.6
 
   entry_points:
     - spider = spider.__main__:main
@@ -35,9 +34,6 @@ test:
     - spider
   commands:
     - spider --help
-    # Verify pip packages were installed properly
-    - {{ PYTHON }} -c "import selenium_stealth"
-    - {{ PYTHON }} -c "import undetected_chromedriver"
 
 about:
   home: https://github.com/melliott-anaconda/spider-crawler
