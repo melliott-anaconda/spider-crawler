@@ -291,8 +291,12 @@ def worker_process(worker_id, task_queue, result_queue, url_cache, base_domain, 
                         
                         if use_undetected:
                             # Try undetected mode if standard setup failed before
-                            from ..browser.undetected import setup_undetected_webdriver
-                            driver = setup_undetected_webdriver(headless=headless)
+                            try:
+                                from ..browser.undetected import setup_undetected_webdriver
+                                driver = setup_undetected_webdriver(headless=headless)
+                            except ImportError:
+                                from ..browser.driver import setup_webdriver
+                                driver = setup_webdriver(headless, webdriver_path)
                         else:
                             # Standard setup
                             from ..browser.driver import setup_webdriver
