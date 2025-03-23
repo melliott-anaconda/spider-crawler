@@ -14,6 +14,8 @@ setup(
         "beautifulsoup4>=4.10.0",
         "html2text>=2020.1.16",
         "webdriver-manager>=3.5.2",
+        "selenium-stealth>=1.0.6",  
+        "undetected-chromedriver>=3.4.6", 
     ],
     entry_points={
         'console_scripts': [

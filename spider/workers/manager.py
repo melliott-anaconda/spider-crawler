@@ -8,9 +8,9 @@ coordination of multiple crawler worker processes.
 
 import threading
 import time
-from multiprocessing import Lock, Process, Queue, Value
+from multiprocessing import Lock, Queue, Value
 
-from .worker import Worker, worker_process
+from .worker import Worker
 
 
 class WorkerPool:
@@ -21,11 +21,11 @@ class WorkerPool:
     worker processes based on crawl rate controller directives.
     """
 
-    def __init__(self, initial_workers, task_queue, result_queue, url_cache,
+    def __init__(self, spider, initial_workers, task_queue, result_queue, url_cache,
                 base_domain, path_prefix, keywords, content_filter,
                 rate_controller, headless=True, webdriver_path=None,
                 max_restarts=3, allow_subdomains=False, allowed_extensions=None,
-                is_spa=False, markdown_mode=False):
+                is_spa=False, markdown_mode=False, use_undetected=False):
         """
         Initialize the worker pool.
         
@@ -47,6 +47,8 @@ class WorkerPool:
             is_spa: Whether to use SPA-specific processing
             markdown_mode: Whether to save content as markdown
         """
+        """Initialize the worker pool."""
+        self.spider = spider
         self.initial_workers = initial_workers
         self.task_queue = task_queue
         self.result_queue = result_queue
@@ -63,6 +65,7 @@ class WorkerPool:
         self.allowed_extensions = allowed_extensions
         self.is_spa = is_spa
         self.markdown_mode = markdown_mode
+        self.use_undetected = use_undetected
         
         # Set up worker tracking
         self.workers = []
@@ -216,25 +219,28 @@ class WorkerPool:
     def _monitor_workers(self):
         """
         Monitor worker processes and adjust as needed.
-        
-        This method runs in a background thread to periodically check worker
-        status and restart any that have died unexpectedly.
         """
-        while not self.stop_event.is_set() and self.is_running:
+        while not self.stop_event.is_set() and self.spider.is_running:
             try:
                 # Check for completed or dead workers
                 alive_workers = [w for w in self.workers if w.is_alive()]
                 
                 # If some workers died unexpectedly, remove them from our list
                 if len(alive_workers) != len(self.workers):
-                    print(f"Some workers died unexpectedly. Alive: {len(alive_workers)}/{len(self.workers)}")
-                    self.workers = alive_workers
+                    # Only treat as unexpected death if we're not in controlled shutdown
+                    if not self.spider.controlled_shutdown:
+                        print(f"Some workers died unexpectedly. Alive: {len(alive_workers)}/{len(self.workers)}")
+                        self.workers = alive_workers
+                    else:
+                        # In controlled shutdown, just update the list
+                        self.workers = alive_workers
                 
                 # Check if we need to adjust worker count based on rate controller
                 target = self.target_workers.value
                 current_count = len(alive_workers)
                 
-                if current_count != target:
+                # Only adjust if not in controlled shutdown
+                if current_count != target and not self.spider.controlled_shutdown:
                     self.adjust_worker_count()
                 
                 # Update current delay value from rate controller
@@ -275,3 +281,13 @@ class WorkerPool:
             'total_workers_created': self.next_worker_id,
             'current_delay': self.current_delay.value
         }
+    
+    def active_workers_count(self):
+        """
+        Get the current number of active workers.
+        
+        Returns:
+            int: Number of active workers
+        """
+        alive_workers = [w for w in self.workers if w.is_alive()]
+        return len(alive_workers)

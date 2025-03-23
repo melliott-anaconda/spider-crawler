@@ -6,35 +6,24 @@ This module contains the Worker class and worker_process function that handle
 individual crawling tasks.
 """
 
-import json
-import os
-import re
 import signal
 import sys
-import threading
 import time
-import traceback
+from queue import Empty
 from multiprocessing import Process
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 from selenium.common.exceptions import (InvalidSessionIdException,
-                                       SessionNotCreatedException,
                                        TimeoutException,
                                        WebDriverException)
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.action_chains import ActionChains
 
-# Import these functions from your existing modules
-# You'll need to adjust these imports based on your final structure
-from ..browser.driver import setup_webdriver
 from ..content.extractor import search_page_for_keywords
-from ..content.filter import ContentFilter
 from ..content.markdown import html_to_markdown, save_markdown_file
 from ..content.parser import determine_page_category
 from ..utils.http import handle_response_code
-from ..utils.url import (get_page_links, get_spa_links, is_webpage_url,
-                         normalize_url)
+from ..utils.url import (get_page_links, get_spa_links, is_webpage_url)
 
 
 class Worker:
@@ -167,11 +156,24 @@ def worker_process(worker_id, task_queue, result_queue, url_cache, base_domain, 
         active_workers_lock: Lock for active_workers
         target_workers: Shared value for target worker count
     """
-    print(f"Worker {worker_id} started")
+    print(f"Worker {worker_id} started and waiting for URLs")
     
     # Create a local copy of the delay that can be updated
     current_delay = initial_delay
     last_delay_check = time.time()
+    startup_time = time.time()
+    last_activity_time = time.time()
+    
+    # Track if we've ever received a URL
+    received_url = False
+    startup_timeout = 120  # Wait up to 2 minutes for initial URLs
+    idle_timeout = 300     # Wait up to 5 minutes when idle after processing URLs
+    
+    # Increment active workers counter
+    if active_workers_lock and active_workers:
+        with active_workers_lock:
+            active_workers.value += 1
+            print(f"Worker {worker_id} incremented active count: {active_workers.value}")
     
     # Function to check and update delay from shared value
     def update_current_delay():
@@ -181,12 +183,14 @@ def worker_process(worker_id, task_queue, result_queue, url_cache, base_domain, 
         # Check periodically
         if now - last_delay_check > 5:
             try:
-                if target_workers and hasattr(target_workers, '_value'):
-                    shared_delay = target_workers._value.get_obj().current_delay.value
-                    if abs(current_delay - shared_delay) > 0.1:
-                        old_delay = current_delay
-                        current_delay = shared_delay
-                        print(f"Worker {worker_id} updated delay: {old_delay:.2f}s → {current_delay:.2f}s")
+                if target_workers and hasattr(target_workers, 'value'):
+                    shared_delay = getattr(target_workers, 'current_delay', current_delay)
+                    if hasattr(shared_delay, 'value'):
+                        delay_value = shared_delay.value
+                        if abs(current_delay - delay_value) > 0.1:
+                            old_delay = current_delay
+                            current_delay = delay_value
+                            print(f"Worker {worker_id} updated delay: {old_delay:.2f}s → {current_delay:.2f}s")
             except:
                 pass
             
@@ -198,7 +202,7 @@ def worker_process(worker_id, task_queue, result_queue, url_cache, base_domain, 
     def signal_handler(sig, frame):
         print(f"Worker {worker_id} received shutdown signal")
         try:
-            if 'driver' in locals():
+            if 'driver' in locals() and driver:
                 driver.quit()
         except:
             pass
@@ -209,19 +213,125 @@ def worker_process(worker_id, task_queue, result_queue, url_cache, base_domain, 
     
     # Set up WebDriver for this worker
     driver = None
+    use_undetected = False  # Flag to indicate if we should try undetected mode on failure
+    
     try:
-        driver = setup_webdriver(headless, webdriver_path)
+        # Delay WebDriver initialization until we receive a URL
+        driver = None
         restarts = 0
         
         while True:
             try:
                 # Get a URL from the queue
-                url = task_queue.get()
+                try:
+                    # Use a shorter timeout during startup, longer after receiving URLs
+                    timeout = idle_timeout / 60 if received_url else 10
+                    url = task_queue.get(timeout=timeout)
+                    
+                    # Mark that we've received a URL
+                    if not received_url and url is not None:
+                        received_url = True
+                        print(f"Worker {worker_id} received first URL: {url}")
+                    
+                    # Update activity timestamp
+                    last_activity_time = time.time()
+                    
+                except Empty:
+                    # Check if parent has indicated shutdown via stop_event
+                    # Since workers are in a separate process, we need another way to check
+                    # We can use the task queue - if it's been closed or parent has stopped
+                    # filling it, we should eventually exit
+                    
+                    if task_queue.empty():  # If queue is empty, check how long we've been idle
+                        current_time = time.time()
+                        
+                        # If we've never received a URL, check for startup timeout
+                        if not received_url:
+                            elapsed = current_time - startup_time
+                            if elapsed > startup_timeout:
+                                print(f"Worker {worker_id} shutting down - no URLs received after {elapsed:.1f}s")
+                                break
+                            if elapsed % 30 < 1:  # Log every ~30 seconds to reduce noise
+                                print(f"Worker {worker_id} waiting for initial URLs... ({elapsed:.1f}s/{startup_timeout}s)")
+                            continue
+                        else:
+                            # If we've processed URLs before, check idle timeout
+                            elapsed = current_time - last_activity_time
+                            if elapsed > idle_timeout:
+                                print(f"Worker {worker_id} shutting down - idle for {elapsed:.1f}s")
+                                break
+                            if elapsed % 60 < 1:  # Log every ~60 seconds
+                                print(f"Worker {worker_id} waiting for more URLs... (idle for {elapsed:.1f}s)")
+                                
+                                # Additional check - if we've been idle for a significant time
+                                # Check if the parent process might be shutting down
+                                if elapsed > 120:  # After 2 minutes of inactivity
+                                    print(f"Worker {worker_id} checking parent process status...")
+                                    try:
+                                        # Put a small dummy task to see if someone is listening
+                                        # This is just a probe - it won't be processed
+                                        task_queue.put_nowait("PROBE")
+                                        # If we made it here, queue is still accepting tasks
+                                        # which means parent hasn't closed it
+                                    except:
+                                        # If we get an error, queue may be closed
+                                        print(f"Worker {worker_id} detected parent process shutdown")
+                                        break
+                            continue
                 
                 # Exit signal
                 if url is None:
+                    print(f"Worker {worker_id} received exit signal")
                     break
-                    
+                
+                # Initialize WebDriver if not already done
+                if driver is None:
+                    try:
+                        print(f"Worker {worker_id} initializing WebDriver for first URL")
+                        
+                        if use_undetected:
+                            # Try undetected mode if standard setup failed before
+                            from ..browser.undetected import setup_undetected_webdriver
+                            driver = setup_undetected_webdriver(headless=headless)
+                        else:
+                            # Standard setup
+                            from ..browser.driver import setup_webdriver
+                            driver = setup_webdriver(headless, webdriver_path)
+                            
+                            # Apply stealth mode if available
+                            try:
+                                from ..browser.stealth import apply_stealth_mode
+                                driver = apply_stealth_mode(driver)
+                            except ImportError:
+                                print("Stealth mode not available, proceeding without it")
+                            
+                            # Apply CDP features
+                            try:
+                                from ..browser.driver import enable_cdp_features
+                                driver = enable_cdp_features(driver)
+                                
+                                # Optionally block resources to speed up crawling
+                                # from ..browser.driver import enable_resource_blocking
+                                # driver = enable_resource_blocking(driver, block_images=True)
+                            except Exception as e:
+                                print(f"Could not enable CDP features: {e}")
+                            
+                    except Exception as e:
+                        print(f"Worker {worker_id} failed to initialize WebDriver: {e}")
+                        # If standard mode fails, try undetected mode next time
+                        if not use_undetected:
+                            use_undetected = True
+                            print(f"Will try undetected mode next time")
+                        
+                        # Put the URL back in the queue and continue
+                        if retry_queue is not None:
+                            retry_queue.put({
+                                'url': url,
+                                'retry_after': 5,
+                                'action': 'retry'
+                            })
+                        continue
+                
                 print(f"Worker {worker_id} processing: {url}")
                 
                 # Get the current delay value from shared memory
@@ -385,14 +495,18 @@ def worker_process(worker_id, task_queue, result_queue, url_cache, base_domain, 
                             'http_status': http_status
                         })
                     
+                    # Update activity timestamp after successful processing
+                    last_activity_time = time.time()
+                    
                 except WebDriverException as e:
                     # Check for session errors that require restart
-                    if any(error_text in str(e) for error_text in ["invalid session id", "session deleted", "session not found"]):
+                    if isinstance(e, InvalidSessionIdException) or "invalid session id" in str(e) or "session deleted" in str(e) or "session not found" in str(e):
                         print(f"Worker {worker_id} WebDriver session error: {e}")
                         
                         # Close the current driver
                         try:
-                            driver.quit()
+                            if driver:
+                                driver.quit()
                         except:
                             pass
                         

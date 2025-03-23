@@ -15,10 +15,7 @@ from multiprocessing import Manager, Value, Lock, Queue
 from urllib.parse import urlparse
 from queue import Empty
 
-from ..browser.driver import setup_webdriver
 from ..content.filter import ContentFilter
-from ..content.parser import determine_page_category
-from ..utils.url import normalize_url, is_webpage_url
 from ..workers.manager import WorkerPool
 from .checkpoint import CheckpointManager
 from .rate_controller import CrawlRateController
@@ -135,6 +132,10 @@ class Spider:
         # Thread for checkpointing
         self.checkpoint_thread = None
         
+        # Activity tracking
+        self.last_activity_time = time.time()
+        self.no_progress_count = 0
+        
         # Set up signal handlers
         self._setup_signal_handlers()
         
@@ -223,7 +224,7 @@ class Spider:
             print(f"Error resuming from checkpoint: {e}")
             return False
             
-    def start(self, resume=False, headless=True, webdriver_path=None, max_restarts=3):
+    def start(self, resume=False, headless=True, webdriver_path=None, max_restarts=3, use_undetected=False):
         """
         Start the crawling process.
         
@@ -250,12 +251,21 @@ class Spider:
         # Resume from checkpoint if requested
         if resume:
             self.resume_from_checkpoint()
-            
+        
+        # If we have no URLs to process, add a warning
+        if len(self.to_visit) == 0 and len(self.pending_urls) == 0:
+            print(f"Warning: No URLs to process. Starting URL is: {self.start_url}")
+            # Ensure the start URL is in the to_visit list
+            if self.start_url not in self.to_visit and self.start_url not in self.visited:
+                print(f"Adding start URL {self.start_url} to queue")
+                self.to_visit.append(self.start_url)
+                
         # Initialize task queue with URLs from to_visit
         self._fill_task_queue()
         
         # Create the worker pool
         self.worker_pool = WorkerPool(
+            spider=self,
             initial_workers=self.target_workers.value,
             task_queue=self.task_queue,
             result_queue=self.result_queue,
@@ -271,7 +281,8 @@ class Spider:
             allow_subdomains=self.allow_subdomains,
             allowed_extensions=self.allowed_extensions,
             is_spa=self.is_spa,
-            markdown_mode=self.markdown_mode
+            markdown_mode=self.markdown_mode,
+            use_undetected=use_undetected
         )
         
         # Start the worker pool
@@ -288,17 +299,24 @@ class Spider:
         self.retry_thread.start()
         
         # Start checkpoint thread
-        self.checkpoint_thread = threading.Thread(target=self._checkpoint_loop)
+        self.checkpoint_thread = threading.Thread(target=self.checkpoint_loop)
         self.checkpoint_thread.daemon = True
         self.checkpoint_thread.start()
         
         # Set running flag
         self.is_running = True
         self.stop_event.clear()
+        self.last_activity_time = time.time()
         
         print(f"Spider started with {self.target_workers.value} workers")
-        return True
         
+        # Schedule a task to check progress after initial startup
+        startup_check_thread = threading.Thread(target=self._check_startup_progress)
+        startup_check_thread.daemon = True
+        startup_check_thread.start()
+        
+        return True    
+    
     def stop(self):
         """
         Stop the crawling process gracefully.
@@ -319,6 +337,12 @@ class Spider:
         # Save final checkpoint
         self._save_checkpoint(force=True)
         
+        # Send exit signal to each worker
+        num_workers = self.worker_pool.active_workers_count() if self.worker_pool else 0
+        print(f"Sending exit signals to {num_workers} active workers")
+        for _ in range(num_workers):
+            self.task_queue.put(None)
+            
         # Stop worker pool
         if self.worker_pool:
             self.worker_pool.stop()
@@ -344,7 +368,7 @@ class Spider:
         """
         # Determine how many URLs to add
         current_target = self.target_workers.value
-        urls_to_add = max(0, current_target * 2 - len(self.pending_urls))
+        urls_to_add = max(1, current_target * 2 - len(self.pending_urls))
         
         added = 0
         for _ in range(min(urls_to_add, len(self.to_visit))):
@@ -364,7 +388,59 @@ class Spider:
                 
         if added > 0:
             print(f"Added {added} new URLs to the task queue")
-    
+        
+        # If we have new links but didn't add any (they were all visited already)
+        if added == 0 and len(self.to_visit) > 0:
+            # Try again with the next URL
+            self._fill_task_queue()
+            
+        # Update last activity time if we added URLs
+        if added > 0:
+            self.last_activity_time = time.time()
+            self.no_progress_count = 0
+        elif len(self.to_visit) == 0 and len(self.pending_urls) == 0:
+            # If no URLs to process, increment no progress counter
+            self.no_progress_count += 1
+            
+            # If we have worker processes but no URLs to distribute, 
+            # check if we've reached the end of crawling
+            if self.pages_visited.value > 0 and self.worker_pool:
+                # We've already crawled some pages but now have no more URLs
+                print("No more URLs to distribute. Checking if crawling is complete...")
+                
+                # Wait a bit to make sure all results are processed
+                time.sleep(2)
+                
+                # If still no URLs and no pending URLs, signal completion
+                if len(self.to_visit) == 0 and len(self.pending_urls) == 0:
+                    print("No URLs in queue and none pending. Crawling may be complete.")
+                    # We don't call stop() here - monitoring threads will handle shutdown
+                    
+    def _check_startup_progress(self):
+        """
+        Check if the crawler is making progress after startup.
+        
+        This method runs in a separate thread and checks if URLs are being processed
+        after a short delay to allow workers to initialize.
+        """
+        # Wait for workers to initialize (30 seconds)
+        time.sleep(30)
+        
+        # If we're still running and have made no progress
+        if self.is_running and self.pages_visited.value == 0:
+            # Check if we have pending URLs that haven't been processed
+            if len(self.pending_urls) > 0:
+                print(f"Warning: {len(self.pending_urls)} URLs are pending but none have been processed yet.")
+                print("This may indicate an issue with worker processes.")
+                
+                # Optional: Could trigger diagnostics or retry logic here
+            
+            # If we have neither visited any pages nor have any pending URLs
+            if len(self.pending_urls) == 0 and len(self.to_visit) == 0:
+                print("Warning: No URLs are being processed. Check if the start URL is accessible.")
+                
+                # Could trigger diagnostics or retry the start URL here
+
     def _process_results(self):
         """
         Process results from worker processes.
@@ -372,12 +448,45 @@ class Spider:
         This method runs in a separate thread and continuously processes
         results from the result queue.
         """
+        last_progress_check = time.time()
+        last_urls_count = len(self.to_visit) + len(self.pending_urls)
+        
         while not self.stop_event.is_set() or not self.result_queue.empty():
             try:
                 # Get a result (with timeout to allow checking stop_event)
                 try:
                     result = self.result_queue.get(timeout=1)
                 except Empty:
+                    # Check if crawling is complete (no URLs to visit, no pending URLs, empty queues)
+                    current_time = time.time()
+                    if (len(self.to_visit) == 0 and 
+                        len(self.pending_urls) == 0 and 
+                        self.task_queue.empty() and 
+                        self.result_queue.empty()):
+                        
+                        # Check if we've been in this state for a while
+                        if current_time - self.last_activity_time > 10:  # 10 seconds with no activity
+                            print("Crawling complete - no more URLs to process. Shutting down...")
+                            self.stop_event.set()
+                            break
+                    
+                    # Periodically check if we're making progress
+                    if current_time - last_progress_check > 30:  # Check every 30 seconds
+                        current_urls_count = len(self.to_visit) + len(self.pending_urls)
+                        if current_urls_count == last_urls_count and current_urls_count > 0:
+                            # Same number of URLs for 30 seconds, might be stuck
+                            self.no_progress_count += 1
+                            if self.no_progress_count >= 10:  # 5 minutes of no progress (10 * 30 seconds)
+                                print("No progress detected for 5 minutes. Stopping crawler...")
+                                self.stop_event.set()
+                                break
+                        else:
+                            # Reset counter if count changed
+                            self.no_progress_count = 0
+                            
+                        last_progress_check = current_time
+                        last_urls_count = current_urls_count
+                        
                     continue
                 
                 # Register response with rate controller for adaptive control
@@ -393,6 +502,9 @@ class Spider:
                     self._handle_skipped_result(result)
                 elif 'status' in result and result['status'] == 'error':
                     self._handle_error_result(result)
+                
+                # Update activity timestamp on any result processing
+                self.last_activity_time = time.time()
                 
                 # Check if we've reached the maximum pages
                 if self.max_pages is not None and self.pages_visited.value >= self.max_pages:
@@ -478,7 +590,12 @@ class Spider:
             print(f"Pages visited: {current_pages}" + (f" (max: {self.max_pages})" if self.max_pages else "") + 
                   (f" | Categories: {category_counts}" if category_counts else ""))
         else:
-            print(f"Pages visited: {current_pages}" + (f" (max: {self.max_pages})" if self.max_pages else ""))
+            print(f"Pages visited: {current_pages}" + (f" (max: {self.max_pages})" if self.max_pages else "") +
+                  f" | Queue: {len(self.to_visit)} | Pending: {len(self.pending_urls)}")
+        
+        # Update activity timestamp
+        self.last_activity_time = time.time()
+        self.no_progress_count = 0
     
     def _handle_http_error_result(self, result):
         """
@@ -516,6 +633,9 @@ class Spider:
                     self.current_delay.value = new_delay
                     self.target_workers.value = new_workers
                     print(f"SHARED VALUES UPDATED: target_workers={self.target_workers.value}, current_delay={self.current_delay.value:.2f}s")
+        
+        # Update activity timestamp
+        self.last_activity_time = time.time()
     
     def _handle_skipped_result(self, result):
         """
@@ -536,6 +656,9 @@ class Spider:
         # Mark as visited to avoid retrying
         if url not in self.visited:
             self.visited.append(url)
+        
+        # Update activity timestamp
+        self.last_activity_time = time.time()
     
     def _handle_error_result(self, result):
         """
@@ -554,6 +677,9 @@ class Spider:
             self.pending_urls.remove(url)
         
         # We don't mark as visited since it might be retried
+        
+        # Update activity timestamp
+        self.last_activity_time = time.time()
     
     def _process_retry_queue(self):
         """
@@ -628,6 +754,9 @@ class Spider:
                     # Immediate retry - make sure it's not already in process
                     if url not in self.visited and url not in self.pending_urls:
                         self.to_visit.append(url)
+                        
+                # Update activity timestamp
+                self.last_activity_time = time.time()
             
             except Exception as e:
                 print(f"Error in retry processing: {e}")
@@ -676,6 +805,9 @@ class Spider:
                 if not url_in_visited and not url_in_pending and not url_in_to_visit:
                     print(f"Requeuing {url} (attempt {current_status.get('attempt', '?')})")
                     self.to_visit.append(url)
+                    
+                    # Update activity timestamp
+                    self.last_activity_time = time.time()
                 else:
                     print(f"Not requeuing {url} - already visited/pending/queued")
                 
@@ -687,6 +819,9 @@ class Spider:
             # Still try to requeue in case of error
             if url not in self.visited and url not in self.pending_urls and url not in self.to_visit:
                 self.to_visit.append(url)
+                
+                # Update activity timestamp
+                self.last_activity_time = time.time()
     
     def _save_checkpoint(self, force=False):
         """
@@ -705,7 +840,9 @@ class Spider:
                 'to_visit': list(self.to_visit),
                 'pending_urls': list(self.pending_urls),
                 'pages_visited': self.pages_visited.value,
-                'retry_counts': dict(self.retry_counts)
+                'retry_counts': dict(self.retry_counts),
+                'last_activity_time': self.last_activity_time,
+                'no_progress_count': self.no_progress_count
             }
             
             # Add rate controller state
@@ -728,12 +865,9 @@ class Spider:
             print(f"Error saving checkpoint: {e}")
             return False
     
-    def _checkpoint_loop(self):
+    def checkpoint_loop(self):
         """
         Periodically save crawler state to checkpoint file.
-        
-        This method runs in a separate thread and saves the crawler state
-        at regular intervals.
         """
         while not self.stop_event.is_set():
             try:
@@ -743,6 +877,33 @@ class Spider:
                 # Check if we should save a checkpoint
                 if self.checkpoint_manager.should_save_checkpoint(self.pages_visited.value):
                     self._save_checkpoint()
+                
+                # Check if crawling is complete
+                if (len(self.to_visit) == 0 and 
+                    len(self.pending_urls) == 0 and 
+                    self.task_queue.empty() and 
+                    self.result_queue.empty() and
+                    time.time() - self.last_activity_time > 30):  # No activity for 30 seconds
+                    
+                    print("No more URLs to process. Saving final checkpoint...")
+                    self._save_checkpoint(force=True)
+                    
+                    print("Crawling complete. Initiating shutdown...")
+                    
+                    # Mark as controlled shutdown
+                    self.controlled_shutdown = True
+                    
+                    # Send exit signals to all active workers
+                    if self.worker_pool:
+                        active_count = len([w for w in self.worker_pool.workers if w.is_alive()])
+                        print(f"Sending exit signals to {active_count} active workers")
+                        for _ in range(active_count):
+                            self.task_queue.put(None)
+                    
+                    # Set stop event AFTER sending exit signals
+                    self.stop_event.set()
+                    self.is_running = False
+                    break
                     
             except Exception as e:
                 print(f"Error in checkpoint loop: {e}")

@@ -6,7 +6,7 @@ searching websites for keywords or saving content as markdown.
 """
 
 __version__ = '1.0.0'
-__author__ = 'Claude'
+__author__ = 'Michael Elliott'
 
 from .core.crawler import Spider
 from .core.rate_controller import CrawlRateController

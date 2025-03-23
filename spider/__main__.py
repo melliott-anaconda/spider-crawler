@@ -7,11 +7,12 @@ from the command line.
 """
 
 import sys
+import time
 import traceback
 from multiprocessing import freeze_support
 
 from .cli.argument_parser import parse_args, print_config_summary
-from .cli.config import Configuration, load_config_from_args, save_config
+from .cli.config import load_config_from_args, save_config
 from .content.filter import ContentFilter
 from .core.crawler import Spider
 
@@ -80,22 +81,65 @@ def main():
                 max_restarts=config.max_restarts
             )
             
+            # Define a timeout for inactivity (5 minutes)
+            inactivity_timeout = 300
+            
             # Wait for user input to stop (if interactive)
             if sys.stdin.isatty():
                 print("\nPress Ctrl+C to stop crawling...")
                 try:
-                    # Wait until interrupted
+                    # Wait until interrupted or completion
+                    last_check_time = time.time()
+                    last_urls_count = len(spider.to_visit) + len(spider.pending_urls)
+                    
                     while spider.is_running:
                         # Sleep briefly to avoid CPU hogging
-                        import time
                         time.sleep(0.1)
+                        
+                        # Check for inactivity periodically
+                        current_time = time.time()
+                        if current_time - last_check_time > 10:  # Check every 10 seconds
+                            current_urls_count = len(spider.to_visit) + len(spider.pending_urls)
+                            
+                            # Check if no progress and no URLs to process
+                            if (current_urls_count == last_urls_count == 0 and 
+                                spider.task_queue.empty() and spider.result_queue.empty()):
+                                # If no activity for a while, stop
+                                if current_time - spider.last_activity_time > inactivity_timeout:
+                                    print(f"\nNo URLs processed for {inactivity_timeout} seconds. Stopping crawler...")
+                                    spider.stop()
+                                    break
+                            
+                            # Update for next check
+                            last_check_time = current_time
+                            last_urls_count = current_urls_count
                 except KeyboardInterrupt:
                     print("\nReceived keyboard interrupt. Stopping...")
             else:
                 # In non-interactive mode, just wait for the spider to finish
+                last_check_time = time.time()
+                last_urls_count = len(spider.to_visit) + len(spider.pending_urls)
+                
                 while spider.is_running:
-                    import time
                     time.sleep(1)
+                    
+                    # Check for inactivity periodically
+                    current_time = time.time()
+                    if current_time - last_check_time > 10:  # Check every 10 seconds
+                        current_urls_count = len(spider.to_visit) + len(spider.pending_urls)
+                        
+                        # Check if no progress and no URLs to process
+                        if (current_urls_count == last_urls_count == 0 and 
+                            spider.task_queue.empty() and spider.result_queue.empty()):
+                            # If no activity for a while, stop
+                            if current_time - spider.last_activity_time > inactivity_timeout:
+                                print(f"\nNo URLs processed for {inactivity_timeout} seconds. Stopping crawler...")
+                                spider.stop()
+                                break
+                        
+                        # Update for next check
+                        last_check_time = current_time
+                        last_urls_count = current_urls_count
             
         finally:
             # Ensure spider is stopped properly

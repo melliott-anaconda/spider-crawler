@@ -8,9 +8,8 @@ files, and for managing crawler configuration.
 
 import json
 import os
-import sys
 from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Set, Optional, Any, Union
+from typing import List, Set, Optional
 from urllib.parse import urlparse
 
 
