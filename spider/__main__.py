@@ -15,7 +15,6 @@ from .cli.argument_parser import parse_args, print_config_summary
 from .cli.config import load_config_from_args, save_config
 from .content.filter import ContentFilter
 from .core.crawler import Spider
-from .browser.driver import ensure_no_chromedriver_zombies
 
 
 def main():
@@ -160,6 +159,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # Clean up any existing ChromeDriver processes
-    ensure_no_chromedriver_zombies()
     sys.exit(main())
