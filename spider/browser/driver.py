@@ -9,6 +9,9 @@ with appropriate settings for web crawling.
 import random
 import time
 import types
+import subprocess
+import os
+import signal
 
 from selenium import webdriver
 from selenium.common.exceptions import (SessionNotCreatedException, 
@@ -16,6 +19,40 @@ from selenium.common.exceptions import (SessionNotCreatedException,
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
+
+def ensure_no_chromedriver_zombies():
+        """Clean up any zombie ChromeDriver processes."""
+        
+        try:
+            # Find all chromedriver processes
+            result = subprocess.run(['pgrep', 'chromedriver'], 
+                                    capture_output=True, text=True)
+            
+            if result.returncode == 0:  # Found processes
+                pids = result.stdout.strip().split('\n')
+                print(f"Found {len(pids)} ChromeDriver processes to clean up")
+                
+                for pid in pids:
+                    pid = pid.strip()
+                    if pid:
+                        try:
+                            # Try regular termination first
+                            os.kill(int(pid), signal.SIGTERM)
+                            time.sleep(0.1)  # Give it a moment
+                            
+                            # Check if still running
+                            try:
+                                os.kill(int(pid), 0)  # Signal 0 checks if process exists
+                                # If we get here, process still exists, try SIGKILL
+                                os.kill(int(pid), signal.SIGKILL)
+                            except OSError:
+                                # Process already gone
+                                pass
+                        except Exception as e:
+                            print(f"Error killing ChromeDriver process {pid}: {e}")
+        except Exception as e:
+            print(f"Error checking for ChromeDriver processes: {e}")
+    
 
 def get_random_user_agent():
     """
@@ -73,6 +110,11 @@ def setup_webdriver(headless=True, webdriver_path=None, retry_count=3, page_load
     Raises:
         RuntimeError: If WebDriver creation fails after specified retry attempts
     """
+
+    import os
+    import platform
+    print(f"Starting WebDriver setup: headless={headless}, system={platform.system()}, python={platform.python_version()}")
+    print(f"Memory info: {os.popen('ps -o rss -p %d | tail -1' % os.getpid()).read().strip()} KB used by this process")
     chrome_options = Options()
     if headless:
         chrome_options.add_argument('--headless=new')  # Updated headless syntax
@@ -92,6 +134,19 @@ def setup_webdriver(headless=True, webdriver_path=None, retry_count=3, page_load
     chrome_options.add_argument('--disable-background-networking')
     chrome_options.add_argument('--disable-backgrounding-occluded-windows')
     
+    # Limit memory and process resources - IMPORTANT
+    chrome_options.add_argument('--js-flags=--expose-gc')
+    chrome_options.add_argument('--single-process')  # This can help on Mac
+    chrome_options.add_argument('--disable-application-cache')
+    chrome_options.add_argument('--disable-infobars')
+    chrome_options.add_argument('--disable-browser-side-navigation')
+    
+    # More aggressive resource limits for macOS
+    if platform.system() == 'Darwin':  # macOS
+        chrome_options.add_argument('--disable-renderer-backgrounding')
+        chrome_options.add_argument('--enable-low-end-device-mode')
+        chrome_options.add_argument('--force-device-scale-factor=1')
+
     # Add a random user-agent - keep your existing function
     chrome_options.add_argument(f'--user-agent={get_random_user_agent()}')
     

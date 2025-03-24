@@ -356,7 +356,8 @@ class Spider:
         
         # Print summary
         self._print_summary()
-        
+        from ..browser.driver import ensure_no_chromedriver_zombies
+        ensure_no_chromedriver_zombies()        
         return True
     
     def _fill_task_queue(self):

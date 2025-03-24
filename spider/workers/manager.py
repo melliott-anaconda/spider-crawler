@@ -3,7 +3,7 @@
 Worker pool manager module that handles multiple crawler workers.
 
 This module contains the WorkerPool class that manages the lifecycle and
-coordination of multiple crawler worker processes.
+coordination of multiple crawler worker processes, each with its own browser pool.
 """
 
 import threading
@@ -25,7 +25,8 @@ class WorkerPool:
                 base_domain, path_prefix, keywords, content_filter,
                 rate_controller, headless=True, webdriver_path=None,
                 max_restarts=3, allow_subdomains=False, allowed_extensions=None,
-                is_spa=False, markdown_mode=False, use_undetected=False):
+                is_spa=False, markdown_mode=False, use_undetected=False,
+                browser_pool_size=3, browser_max_idle_time=300):
         """
         Initialize the worker pool.
         
@@ -46,6 +47,8 @@ class WorkerPool:
             allowed_extensions: Additional file extensions to allow
             is_spa: Whether to use SPA-specific processing
             markdown_mode: Whether to save content as markdown
+            browser_pool_size: Size of browser pool per worker (min_browsers)
+            browser_max_idle_time: Maximum idle time for browsers in seconds
         """
         """Initialize the worker pool."""
         self.spider = spider
@@ -66,6 +69,8 @@ class WorkerPool:
         self.is_spa = is_spa
         self.markdown_mode = markdown_mode
         self.use_undetected = use_undetected
+        self.browser_pool_size = browser_pool_size
+        self.browser_max_idle_time = browser_max_idle_time
         
         # Set up worker tracking
         self.workers = []
@@ -117,7 +122,7 @@ class WorkerPool:
         worker_id = self.next_worker_id
         self.next_worker_id += 1
         
-        # Create worker instance
+        # Create worker instance with browser pooling enabled but in initial single browser mode
         worker = Worker(
             worker_id=worker_id,
             task_queue=self.task_queue,
@@ -138,7 +143,11 @@ class WorkerPool:
             retry_queue=self.retry_queue,
             active_workers=self.active_workers,
             active_workers_lock=self.active_workers_lock,
-            target_workers=self.target_workers
+            target_workers=self.target_workers,
+            # Browser pool configuration
+            browser_pool_size=self.browser_pool_size,
+            browser_max_idle_time=self.browser_max_idle_time,
+            use_browser_pool=True  # Enable browser pooling but it will start in single browser mode
         )
         
         # Start worker process
@@ -148,7 +157,7 @@ class WorkerPool:
         self.workers.append(worker)
         self.worker_processes[worker_id] = worker
         
-        print(f"Started worker {worker_id} with delay={self.current_delay.value:.2f}s")
+        print(f"Started worker {worker_id} with delay={self.current_delay.value:.2f}s and browser pool size=1 (will grow to {self.browser_pool_size})")
         return worker_id
 
     def stop(self, timeout=5):
@@ -228,7 +237,7 @@ class WorkerPool:
                 # If some workers died unexpectedly, remove them from our list
                 if len(alive_workers) != len(self.workers):
                     # Only treat as unexpected death if we're not in controlled shutdown
-                    if not self.spider.controlled_shutdown:
+                    if not hasattr(self.spider, 'controlled_shutdown') or not self.spider.controlled_shutdown:
                         print(f"Some workers died unexpectedly. Alive: {len(alive_workers)}/{len(self.workers)}")
                         self.workers = alive_workers
                     else:
@@ -240,7 +249,7 @@ class WorkerPool:
                 current_count = len(alive_workers)
                 
                 # Only adjust if not in controlled shutdown
-                if current_count != target and not self.spider.controlled_shutdown:
+                if current_count != target and (not hasattr(self.spider, 'controlled_shutdown') or not self.spider.controlled_shutdown):
                     self.adjust_worker_count()
                 
                 # Update current delay value from rate controller
@@ -279,7 +288,8 @@ class WorkerPool:
             'active_workers': self.active_workers.value,
             'alive_workers': alive_count,
             'total_workers_created': self.next_worker_id,
-            'current_delay': self.current_delay.value
+            'current_delay': self.current_delay.value,
+            'browser_pool_size': self.browser_pool_size
         }
     
     def active_workers_count(self):
