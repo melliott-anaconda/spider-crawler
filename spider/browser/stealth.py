@@ -6,23 +6,26 @@ Browser stealth configuration to avoid bot detection.
 try:
     from selenium_stealth import stealth
 except ImportError:
-    print("selenium-stealth not installed. For stealth mode, install with: pip install selenium-stealth")
+    print(
+        "selenium-stealth not installed. For stealth mode, install with: pip install selenium-stealth"
+    )
     stealth = None
+
 
 def apply_stealth_mode(driver):
     """
     Apply stealth mode to the WebDriver to avoid bot detection.
-    
+
     Args:
         driver: Selenium WebDriver instance
-        
+
     Returns:
         WebDriver: The modified WebDriver instance
     """
     if stealth is None:
         print("Warning: selenium-stealth not available, stealth mode not applied")
         return driver
-        
+
     try:
         stealth(
             driver,
