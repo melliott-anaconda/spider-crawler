@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="spider-crawler",
-    version="1.1.1",
+    version="1.1.2",
     description="A flexible web crawler for keyword searching and content extraction",
     author="Michael Elliott",
     author_email="melliott@anaconda.com",
@@ -19,6 +19,7 @@ setup(
         "full": [
             "selenium-stealth>=1.0.6",
             "undetected-chromedriver>=3.4.6",
+            "playwright>=1.51.0"
         ],
     },
     entry_points={

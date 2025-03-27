@@ -39,6 +39,12 @@ pip install -e .
 
 You'll also need Chrome browser installed for the crawler to work properly.
 
+If you want to run in playwright mode, you will need to install playwright if conda install did not install it.
+```bash
+pip install playwright
+python -m playwright install
+```
+
 ## Quick Start
 
 ### Keyword Search Mode
