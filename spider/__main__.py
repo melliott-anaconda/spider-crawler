@@ -36,6 +36,16 @@ def main():
             # If only saving config was requested, exit
             if args.config and not args.url:
                 return 0
+            
+        if config.browser_engine == "playwright":
+            try:
+                import playwright
+                print("- Playwright is installed and available")
+            except ImportError:
+                print("- WARNING: Playwright engine selected but not installed.")
+                print("- To install: pip install playwright && python -m playwright install")
+                print("- Falling back to Selenium engine")
+                config.browser_engine = "selenium"
 
         # Print configuration summary
         print_config_summary(args)
@@ -61,6 +71,8 @@ def main():
             allowed_extensions=config.allowed_extensions,
             is_spa=config.spa_mode,
             markdown_mode=config.markdown_mode,
+            browser_engine=config.browser_engine,
+            browser_type=config.browser_type
         )
 
         # Configure rate controller

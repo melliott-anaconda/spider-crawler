@@ -41,6 +41,8 @@ class WorkerPool:
         is_spa=False,
         markdown_mode=False,
         use_undetected=False,
+        browser_engine="selenium",
+        browser_type="chromium",
     ):
         """
         Initialize the worker pool.
@@ -82,6 +84,8 @@ class WorkerPool:
         self.is_spa = is_spa
         self.markdown_mode = markdown_mode
         self.use_undetected = use_undetected
+        self.browser_engine = browser_engine
+        self.browser_type = browser_type
 
         # Set up worker tracking
         self.workers = []
@@ -133,7 +137,7 @@ class WorkerPool:
         worker_id = self.next_worker_id
         self.next_worker_id += 1
 
-        # Create worker instance
+        # Create worker instance with browser_engine parameter
         worker = Worker(
             worker_id=worker_id,
             task_queue=self.task_queue,
@@ -155,6 +159,8 @@ class WorkerPool:
             active_workers=self.active_workers,
             active_workers_lock=self.active_workers_lock,
             target_workers=self.target_workers,
+            browser_engine=self.browser_engine, 
+            browser_type=self.browser_type,
         )
 
         # Start worker process
@@ -164,7 +170,7 @@ class WorkerPool:
         self.workers.append(worker)
         self.worker_processes[worker_id] = worker
 
-        print(f"Started worker {worker_id} with delay={self.current_delay.value:.2f}s")
+        print(f"Started worker {worker_id} with delay={self.current_delay.value:.2f}s using {self.browser_engine} engine")
         return worker_id
 
     def stop(self, timeout=5):

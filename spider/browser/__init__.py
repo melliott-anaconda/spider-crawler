@@ -1,21 +1,25 @@
 """
 Browser module for handling browser initialization and navigation.
 
-This package contains components for setting up WebDriver instances and
-navigating web pages including SPAs (Single Page Applications).
+This package contains components for setting up browser instances (Selenium or Playwright)
+and navigating web pages including SPAs (Single Page Applications).
 """
 
-from .driver import (enable_cdp_features, enable_resource_blocking,
-                     get_random_user_agent, setup_webdriver)
-from .navigator import hash_page_content, wait_for_spa_content
-from .stealth import apply_stealth_mode
+from .common.interface import Browser, BrowserFactory, BrowserNavigator
 
+# Export the factory function for creating browser instances
+create_browser = BrowserFactory.create
+
+# Export navigation utilities
+wait_for_spa_content = BrowserNavigator.wait_for_spa_content
+extract_links = BrowserNavigator.extract_links
+hash_page_content = BrowserNavigator.hash_page_content
+
+# Export browser interface for type hints
 __all__ = [
-    "setup_webdriver",
-    "get_random_user_agent",
-    "wait_for_spa_content",
-    "hash_page_content",
-    "enable_cdp_features",
-    "enable_resource_blocking",
-    "apply_stealth_mode",
+    "Browser",             # Abstract browser interface
+    "create_browser",      # Factory function to create browser instances
+    "wait_for_spa_content", # Utility to wait for SPA content
+    "extract_links",       # Utility to extract links from page
+    "hash_page_content",   # Utility to hash page content
 ]

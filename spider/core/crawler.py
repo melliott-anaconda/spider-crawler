@@ -45,6 +45,8 @@ class Spider:
         allowed_extensions=None,
         is_spa=False,
         markdown_mode=False,
+        browser_engine="selenium", 
+        browser_type="chromium",
     ):
         """
         Initialize the Spider.
@@ -52,11 +54,11 @@ class Spider:
         Args:
             start_url: URL to start crawling from
             keywords: List of keywords to search for (optional in markdown mode)
-            output_file: Path to output CSV file (required for keyword mode)
             max_pages: Maximum number of pages to crawl (None for unlimited)
             path_prefix: Path prefix to restrict crawling to
             allow_subdomains: Whether to allow crawling across subdomains
             content_filter: ContentFilter instance for filtering page content
+            output_file: Path to output CSV file (required for keyword mode)
             allowed_extensions: Set of additional file extensions to allow
             is_spa: Whether to use SPA-specific processing
             markdown_mode: Whether to save content as markdown
@@ -70,6 +72,8 @@ class Spider:
         self.allowed_extensions = allowed_extensions
         self.is_spa = is_spa
         self.markdown_mode = markdown_mode
+        self.browser_engine = browser_engine
+        self.browser_type = browser_type
 
         # Extract domain from start URL
         parsed_url = urlparse(start_url)
@@ -311,6 +315,8 @@ class Spider:
             is_spa=self.is_spa,
             markdown_mode=self.markdown_mode,
             use_undetected=use_undetected,
+            browser_engine=self.browser_engine,
+            browser_type=self.browser_type
         )
 
         # Start the worker pool

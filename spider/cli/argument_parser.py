@@ -53,16 +53,32 @@ def create_parser():
     )
 
     # Browser options
-    parser.add_argument(
+    browser_group = parser.add_argument_group("Browser Options")
+    browser_group.add_argument(
+        "--browser-engine",
+        type=str,
+        choices=["selenium", "playwright"],
+        default="selenium",
+        help="Browser engine to use for crawling (default: selenium)"
+    )
+    browser_group.add_argument(
         "--visible",
         action="store_true",
         help="Run in visible browser mode instead of headless (default: headless)",
     )
-    parser.add_argument(
+    browser_group.add_argument(
         "--webdriver-path",
         type=str,
         default=None,
-        help="Path to the webdriver executable (optional)",
+        help="Path to the webdriver executable (optional, Selenium only)",
+    )
+
+    browser_group.add_argument(
+        "--browser-type",
+        type=str,
+        choices=["chromium", "chrome", "firefox", "webkit"],
+        default="chrome",
+        help="Specific browser to use with Playwright (default: chrome)"
     )
 
     # Checkpoint options
@@ -350,6 +366,9 @@ def print_config_summary(args):
 
     if args.path_prefix:
         print(f"- Path prefix: {args.path_prefix}")
+    print(f"- Browser mode: {'Visible' if args.visible else 'Headless'}")
+    print(f"- Browser engine: {args.browser_engine}")
+    print(f"- Browser engine: {args.browser_type}")
     print(f"- Browser mode: {'Visible' if args.visible else 'Headless'}")
     print(f"- Resume from checkpoint: {'Yes' if args.resume else 'No'}")
     print(f"- Max restarts: {args.max_restarts}")

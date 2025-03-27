@@ -65,6 +65,9 @@ class Configuration:
     markdown_mode: bool = False
     include_all_content: bool = False
 
+    browser_engine: str = "selenium"
+    browser_type: str = "chromium"
+
     def __post_init__(self):
         """Validate configuration after initialization."""
         # Validate URL
@@ -130,6 +133,8 @@ class Configuration:
             path_prefix=args.path_prefix,
             headless=not args.visible,
             webdriver_path=args.webdriver_path,
+            browser_engine=args.browser_engine,
+            browser_type=args.browser_type,
             max_restarts=args.max_restarts,
             resume=args.resume,
             checkpoint_interval=args.checkpoint_interval,
