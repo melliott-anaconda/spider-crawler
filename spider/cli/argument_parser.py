@@ -34,6 +34,12 @@ def create_parser():
         help="Maximum number of pages to spider (default: unlimited)",
     )
     parser.add_argument(
+        "--depth",
+        type=int,
+        default=None,
+        help="Maximum crawl depth from seed URL (default: unlimited)",
+    )
+    parser.add_argument(
         "--output",
         type=str,
         default="keyword_report.csv",
@@ -350,6 +356,7 @@ def print_config_summary(args):
         print(f"- Output file: {args.output}")
 
     print(f"- Max pages: {'Unlimited' if args.max_pages is None else args.max_pages}")
+    print(f"- Max depth: {'Unlimited' if args.depth is None else args.depth}")  # Added depth display
     print(f"- Rate control:")
     print(
         f"  - Initial workers: {args.min_workers + (args.max_workers - args.min_workers) // 2} (will adjust automatically)"

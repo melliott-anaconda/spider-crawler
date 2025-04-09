@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
 # Import the browser factory
-from ..browser import create_browser, wait_for_spa_content, extract_links
+from ..browser import create_browser, wait_for_spa_content, extract_links, execute_browser_script
 from ..content.extractor import search_page_for_keywords
 from ..content.markdown import html_to_markdown, save_markdown_file
 from ..content.parser import determine_page_category
@@ -284,12 +284,20 @@ def worker_process(
                 try:
                     # Use a shorter timeout during startup, longer after receiving URLs
                     timeout = idle_timeout / 60 if received_url else 10
-                    url = task_queue.get(timeout=timeout)
+                    url_info = task_queue.get(timeout=timeout)
 
                     # Mark that we've received a URL
-                    if not received_url and url is not None:
+                    if not received_url and url_info is not None:
                         received_url = True
-                        print(f"Worker {worker_id} received first URL: {url}")
+                        
+                        # Handle both tuple and string formats
+                        if isinstance(url_info, tuple):
+                            url, depth = url_info
+                            print(f"Worker {worker_id} received first URL: {url} (depth: {depth})")
+                        else:
+                            url = url_info
+                            depth = 0  # Default to depth 0 if not specified
+                            print(f"Worker {worker_id} received first URL: {url}")
 
                     # Update activity timestamp
                     last_activity_time = time.time()
@@ -326,9 +334,18 @@ def worker_process(
                         continue
 
                 # Exit signal
-                if url is None:
+                if url_info is None:
                     print(f"Worker {worker_id} received exit signal")
                     break
+                    
+                # Extract URL and depth from the tuple
+                if isinstance(url_info, tuple):
+                    url, depth = url_info
+                else:
+                    url = url_info
+                    depth = 0  # Default depth
+                    
+                print(f"Worker {worker_id} processing: {url} (depth: {depth})")
 
                 # Initialize browser if not already done
                 if browser is None:
@@ -388,12 +405,12 @@ def worker_process(
 
                         if hasattr(browser, 'evaluate'):
                             try:
-                                is_loaded = browser.evaluate("() => document.readyState === 'complete'")
-                                dom_elements = browser.evaluate("() => document.body.children.length")
+                                is_loaded = execute_browser_script(browser, "() => document.readyState === 'complete'")
+                                dom_elements = execute_browser_script(browser, "() => document.body.children.length")
                                 print(f"Page loaded: {is_loaded}, DOM elements: {dom_elements}")
                                 
                                 # Check for SPA frameworks
-                                frameworks = browser.evaluate("""
+                                frameworks = execute_browser_script(browser, """
                                     () => {
                                         const detections = [];
                                         if (window.React || document.querySelector('[data-reactroot]')) detections.push('React');
@@ -406,7 +423,7 @@ def worker_process(
                             except Exception as e:
                                 print(f"Error checking page load: {e}")
                         
-                        blocked_content = browser.evaluate("""
+                        blocked_content = execute_browser_script(browser, """
                             () => {
                                 const checks = [];
                                 if (document.body.textContent.includes('security check')) checks.push('Security check text');
@@ -567,6 +584,7 @@ def worker_process(
                                 "http_status": http_status,
                                 "markdown_saved": file_path,
                                 "category": category,
+                                "depth": depth,
                             }
                         )
                     else:
@@ -583,6 +601,7 @@ def worker_process(
                                 "links": list(links),
                                 "status": "success",
                                 "http_status": http_status,
+                                "depth": depth,
                             }
                         )
 

@@ -65,6 +65,7 @@ def main():
             keywords=config.keywords,
             output_file=config.output_file,
             max_pages=config.max_pages,
+            max_depth=config.depth,  # Add the depth parameter
             path_prefix=config.path_prefix,
             allow_subdomains=config.allow_subdomains,
             content_filter=content_filter,

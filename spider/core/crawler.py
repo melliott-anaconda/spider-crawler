@@ -39,6 +39,7 @@ class Spider:
         keywords=None,
         output_file=None,
         max_pages=None,
+        max_depth=None,
         path_prefix=None,
         allow_subdomains=False,
         content_filter=None,
@@ -55,6 +56,7 @@ class Spider:
             start_url: URL to start crawling from
             keywords: List of keywords to search for (optional in markdown mode)
             max_pages: Maximum number of pages to crawl (None for unlimited)
+            max_depth: Maximum crawl depth from seed URL (None for unlimited)
             path_prefix: Path prefix to restrict crawling to
             allow_subdomains: Whether to allow crawling across subdomains
             content_filter: ContentFilter instance for filtering page content
@@ -67,6 +69,7 @@ class Spider:
         self.keywords = keywords or []
         self.output_file = output_file
         self.max_pages = max_pages
+        self.max_depth = max_depth
         self.path_prefix = path_prefix
         self.allow_subdomains = allow_subdomains
         self.allowed_extensions = allowed_extensions
@@ -91,7 +94,7 @@ class Spider:
 
         # Set up URL tracking
         self.visited = self.manager.list()
-        self.to_visit = self.manager.list([self.start_url])
+        self.to_visit = self.manager.list([(self.start_url, 0)])  # (url, depth)
         self.pending_urls = self.manager.list()
         self.retry_queue = (
             self.manager.Queue()
@@ -99,7 +102,7 @@ class Spider:
         self.url_cache = self.manager.dict()  # Deduplication cache
 
         # Add start URL to cache
-        self.url_cache[self.start_url] = True
+        self.url_cache[self.start_url] = 0  # Store depth with URL (0 for seed URL)
 
         # Add deduplication tracking for results
         self.seen_results = self.manager.dict()
@@ -407,17 +410,24 @@ class Spider:
         added = 0
         for _ in range(min(urls_to_add, len(self.to_visit))):
             if len(self.to_visit) > 0:
-                url = self.to_visit.pop(0)
+                url_info = self.to_visit.pop(0)
+                
+                # Handle both tuple format (url, depth) and string format for backward compatibility
+                if isinstance(url_info, tuple):
+                    url, depth = url_info
+                else:
+                    url = url_info
+                    depth = self.url_cache.get(url, 0)
 
                 # Skip if already visited
                 if url in self.visited:
                     continue
 
                 # Add to pending list
-                self.pending_urls.append(url)
+                self.pending_urls.append((url, depth))
 
-                # Add to task queue
-                self.task_queue.put(url)
+                # Add to task queue - workers only need the URL
+                self.task_queue.put((url, depth))
                 added += 1
 
         if added > 0:
@@ -584,6 +594,7 @@ class Spider:
             result: Result dictionary from a worker
         """
         url = result["url"]
+        current_depth = result.get("depth", 0)  # Get current depth, default to 0
 
         # Mark as visited
         if url in self.pending_urls:
@@ -628,18 +639,23 @@ class Spider:
                         f"All {len(keyword_results)} results from {url} were duplicates"
                     )
 
-        # Process new links
+        # Process new links if we haven't reached max depth
         new_links = result.get("links", [])
         links_added = 0
+        next_depth = current_depth + 1
+        
+        # Only add new links if we're under the max depth (or if max_depth is None)
+        if self.max_depth is None or next_depth <= self.max_depth:
+            for link in new_links:
+                if link not in self.url_cache:
+                    self.to_visit.append((link, next_depth))
+                    self.url_cache[link] = next_depth
+                    links_added += 1
 
-        for link in new_links:
-            if link not in self.url_cache:
-                self.to_visit.append(link)
-                self.url_cache[link] = True
-                links_added += 1
-
-        if links_added > 0:
-            print(f"Added {links_added} new URLs to the queue from {url}")
+            if links_added > 0:
+                print(f"Added {links_added} new URLs to the queue from {url} (depth: {current_depth}, next depth: {next_depth})")
+        else:
+            print(f"Max depth ({self.max_depth}) reached for {url}, not adding {len(new_links)} discovered links")
 
         # Increment pages visited counter
         with self.pages_visited_lock:
@@ -660,6 +676,7 @@ class Spider:
             print(
                 f"Pages visited: {current_pages}"
                 + (f" (max: {self.max_pages})" if self.max_pages else "")
+                + (f" | Max depth: {self.max_depth}" if self.max_depth else "")
                 + f" | Queue: {len(self.to_visit)} | Pending: {len(self.pending_urls)}"
             )
 

@@ -6,6 +6,7 @@ and navigating web pages including SPAs (Single Page Applications).
 """
 
 from .common.interface import Browser, BrowserFactory, BrowserNavigator
+from .utils import execute_browser_script
 
 # Export the factory function for creating browser instances
 create_browser = BrowserFactory.create
@@ -22,4 +23,5 @@ __all__ = [
     "wait_for_spa_content", # Utility to wait for SPA content
     "extract_links",       # Utility to extract links from page
     "hash_page_content",   # Utility to hash page content
+    "execute_browser_script", # Utility to execute evals correctly in either Playwright or Selenium
 ]

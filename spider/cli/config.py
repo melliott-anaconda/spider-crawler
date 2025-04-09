@@ -27,6 +27,7 @@ class Configuration:
     output_file: str = "keyword_report.csv"
     keywords: List[str] = field(default_factory=list)
     max_pages: Optional[int] = None
+    depth: Optional[int] = None  # Added depth parameter
     path_prefix: Optional[str] = None
 
     # Browser configuration
@@ -130,6 +131,7 @@ class Configuration:
             output_file=args.output,
             keywords=args.keywords,
             max_pages=args.max_pages,
+            depth=args.depth,
             path_prefix=args.path_prefix,
             headless=not args.visible,
             webdriver_path=args.webdriver_path,
