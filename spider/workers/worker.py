@@ -222,16 +222,14 @@ def worker_process(
 
     # Track if we've ever received a URL
     received_url = False
-    startup_timeout = 120  # Wait up to 2 minutes for initial URLs
-    idle_timeout = 300  # Wait up to 5 minutes when idle after processing URLs
+    startup_timeout = 10  # Reduced from 120s to 10s
+    idle_timeout = 10     # Reduced from 300s to 10s
 
     # Increment active workers counter
     if active_workers_lock and active_workers:
         with active_workers_lock:
             active_workers.value += 1
-            print(
-                f"Worker {worker_id} incremented active count: {active_workers.value}"
-            )
+            print(f"Worker {worker_id} incremented active count: {active_workers.value}")
 
     # Function to check and update delay from shared value
     def update_current_delay():
@@ -276,14 +274,30 @@ def worker_process(
     # Set up browser for this worker (delayed initialization)
     browser = None
     restarts = 0
-
+    
+    # Status reporting to main process
+    last_status_report = time.time()
+    
     try:
         while True:
             try:
+                # Report worker status periodically
+                current_time = time.time()
+                if current_time - last_status_report > 10:  # Every 10 seconds
+                    # Report worker status to main process
+                    result_queue.put({
+                        "status": "worker_status",
+                        "worker_id": worker_id,
+                        "idle_time": current_time - last_activity_time,
+                        "received_url": received_url
+                    })
+                    last_status_report = current_time
+                
                 # Get a URL from the queue
                 try:
-                    # Use a shorter timeout during startup, longer after receiving URLs
-                    timeout = idle_timeout / 60 if received_url else 10
+                    # Use a shorter timeout to check the queue more frequently
+                    # This makes shutdown more responsive
+                    timeout = 5.0  # Check queue every 5 seconds
                     url_info = task_queue.get(timeout=timeout)
 
                     # Mark that we've received a URL
@@ -303,39 +317,45 @@ def worker_process(
                     last_activity_time = time.time()
 
                 except Empty:
-                    # Check queue status and timeouts as in original code
-                    # (code for queue checking unchanged)
+                    # Check timeouts
                     current_time = time.time()
                     
                     # If we've never received a URL, check for startup timeout
                     if not received_url:
                         elapsed = current_time - startup_time
                         if elapsed > startup_timeout:
-                            print(
-                                f"Worker {worker_id} shutting down - no URLs received after {elapsed:.1f}s"
-                            )
+                            print(f"Worker {worker_id} shutting down - no URLs received after {elapsed:.1f}s")
+                            # Report shutdown to main process
+                            result_queue.put({
+                                "status": "worker_shutdown",
+                                "worker_id": worker_id,
+                                "reason": "startup_timeout"
+                            })
                             break
-                        if (
-                            elapsed % 30 < 1
-                        ):  # Log every ~30 seconds to reduce noise
-                            print(
-                                f"Worker {worker_id} waiting for initial URLs... ({elapsed:.1f}s/{startup_timeout}s)"
-                            )
                         continue
                     else:
                         # If we've processed URLs before, check idle timeout
                         elapsed = current_time - last_activity_time
                         if elapsed > idle_timeout:
-                            print(
-                                f"Worker {worker_id} shutting down - idle for {elapsed:.1f}s"
-                            )
+                            print(f"Worker {worker_id} shutting down - idle for {elapsed:.1f}s")
+                            # Report shutdown to main process
+                            result_queue.put({
+                                "status": "worker_shutdown",
+                                "worker_id": worker_id,
+                                "reason": "idle_timeout"
+                            })
                             break
-                        # Rest of the timeout checking code unchanged
                         continue
 
                 # Exit signal
                 if url_info is None:
                     print(f"Worker {worker_id} received exit signal")
+                    # Report shutdown to main process
+                    result_queue.put({
+                        "status": "worker_shutdown",
+                        "worker_id": worker_id,
+                        "reason": "exit_signal"
+                    })
                     break
                     
                 # Extract URL and depth from the tuple
@@ -710,9 +730,17 @@ def worker_process(
         except:
             pass
 
-    if active_workers_lock and active_workers:
-        with active_workers_lock:
-            active_workers.value -= 1
-            print(
-                f"Worker {worker_id} decremented active count: {active_workers.value}"
-            )
+        # Decrement active workers counter
+        if active_workers_lock and active_workers:
+            with active_workers_lock:
+                active_workers.value -= 1
+                print(f"Worker {worker_id} decremented active count: {active_workers.value}")
+                
+        # Final shutdown notification
+        try:
+            result_queue.put({
+                "status": "worker_shutdown_complete",
+                "worker_id": worker_id
+            })
+        except:
+            pass  # Queue might be closed

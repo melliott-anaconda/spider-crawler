@@ -354,48 +354,6 @@ class Spider:
 
         return True
 
-    def stop(self):
-        """
-        Stop the crawling process gracefully.
-
-        Returns:
-            bool: True if stopped successfully, False otherwise
-        """
-        if not self.is_running:
-            print("Spider is not running")
-            return False
-
-        # Set stop event
-        self.stop_event.set()
-        self.is_running = False
-
-        print("Stopping spider, please wait...")
-
-        # Save final checkpoint
-        self._save_checkpoint(force=True)
-
-        # Send exit signal to each worker
-        num_workers = self.worker_pool.active_workers_count() if self.worker_pool else 0
-        print(f"Sending exit signals to {num_workers} active workers")
-        for _ in range(num_workers):
-            self.task_queue.put(None)
-
-        # Stop worker pool
-        if self.worker_pool:
-            self.worker_pool.stop()
-
-        # Wait for threads to finish
-        for thread in [self.result_thread, self.retry_thread, self.checkpoint_thread]:
-            if thread and thread.is_alive():
-                thread.join(timeout=5)
-
-        print("Spider stopped")
-
-        # Print summary
-        self._print_summary()
-
-        return True
-
     def _fill_task_queue(self):
         """
         Fill the task queue with URLs from to_visit.
@@ -491,100 +449,6 @@ class Spider:
 
                 # Could trigger diagnostics or retry the start URL here
 
-    def _process_results(self):
-        """
-        Process results from worker processes.
-
-        This method runs in a separate thread and continuously processes
-        results from the result queue.
-        """
-        last_progress_check = time.time()
-        last_urls_count = len(self.to_visit) + len(self.pending_urls)
-
-        while not self.stop_event.is_set() or not self.result_queue.empty():
-            try:
-                # Get a result (with timeout to allow checking stop_event)
-                try:
-                    result = self.result_queue.get(timeout=1)
-                except Empty:
-                    # Check if crawling is complete (no URLs to visit, no pending URLs, empty queues)
-                    current_time = time.time()
-                    if (
-                        len(self.to_visit) == 0
-                        and len(self.pending_urls) == 0
-                        and self.task_queue.empty()
-                        and self.result_queue.empty()
-                    ):
-
-                        # Check if we've been in this state for a while
-                        if (
-                            current_time - self.last_activity_time > 10
-                        ):  # 10 seconds with no activity
-                            print(
-                                "Crawling complete - no more URLs to process. Shutting down..."
-                            )
-                            self.stop_event.set()
-                            break
-
-                    # Periodically check if we're making progress
-                    if (
-                        current_time - last_progress_check > 30
-                    ):  # Check every 30 seconds
-                        current_urls_count = len(self.to_visit) + len(self.pending_urls)
-                        if (
-                            current_urls_count == last_urls_count
-                            and current_urls_count > 0
-                        ):
-                            # Same number of URLs for 30 seconds, might be stuck
-                            self.no_progress_count += 1
-                            if (
-                                self.no_progress_count >= 10
-                            ):  # 5 minutes of no progress (10 * 30 seconds)
-                                print(
-                                    "No progress detected for 5 minutes. Stopping crawler..."
-                                )
-                                self.stop_event.set()
-                                break
-                        else:
-                            # Reset counter if count changed
-                            self.no_progress_count = 0
-
-                        last_progress_check = current_time
-                        last_urls_count = current_urls_count
-
-                    continue
-
-                # Register response with rate controller for adaptive control
-                with self.rate_controller.lock:
-                    self.rate_controller.register_response(result)
-
-                # Process results based on status
-                if "status" in result and result["status"] == "success":
-                    self._handle_success_result(result)
-                elif "status" in result and result["status"] == "http_error":
-                    self._handle_http_error_result(result)
-                elif "status" in result and result["status"] == "skipped":
-                    self._handle_skipped_result(result)
-                elif "status" in result and result["status"] == "error":
-                    self._handle_error_result(result)
-
-                # Update activity timestamp on any result processing
-                self.last_activity_time = time.time()
-
-                # Check if we've reached the maximum pages
-                if (
-                    self.max_pages is not None
-                    and self.pages_visited.value >= self.max_pages
-                ):
-                    print(f"Reached maximum pages limit ({self.max_pages})")
-                    self.stop_event.set()
-                    break
-
-                # Fill task queue if needed
-                self._fill_task_queue()
-
-            except Exception as e:
-                print(f"Error processing result: {e}")
 
     def _handle_success_result(self, result):
         """
@@ -980,55 +844,6 @@ class Spider:
             print(f"Error saving checkpoint: {e}")
             return False
 
-    def checkpoint_loop(self):
-        """
-        Periodically save crawler state to checkpoint file.
-        """
-        while not self.stop_event.is_set():
-            try:
-                # Sleep for a while
-                time.sleep(60)  # Check every minute
-
-                # Check if we should save a checkpoint
-                if self.checkpoint_manager.should_save_checkpoint(
-                    self.pages_visited.value
-                ):
-                    self._save_checkpoint()
-
-                # Check if crawling is complete
-                if (
-                    len(self.to_visit) == 0
-                    and len(self.pending_urls) == 0
-                    and self.task_queue.empty()
-                    and self.result_queue.empty()
-                    and time.time() - self.last_activity_time > 30
-                ):  # No activity for 30 seconds
-
-                    print("No more URLs to process. Saving final checkpoint...")
-                    self._save_checkpoint(force=True)
-
-                    print("Crawling complete. Initiating shutdown...")
-
-                    # Mark as controlled shutdown
-                    self.controlled_shutdown = True
-
-                    # Send exit signals to all active workers
-                    if self.worker_pool:
-                        active_count = len(
-                            [w for w in self.worker_pool.workers if w.is_alive()]
-                        )
-                        print(f"Sending exit signals to {active_count} active workers")
-                        for _ in range(active_count):
-                            self.task_queue.put(None)
-
-                    # Set stop event AFTER sending exit signals
-                    self.stop_event.set()
-                    self.is_running = False
-                    break
-
-            except Exception as e:
-                print(f"Error in checkpoint loop: {e}")
-
     def _print_summary(self):
         """Print a summary of the crawl results."""
         with self.rate_controller.lock:
@@ -1047,3 +862,257 @@ class Spider:
                 self.markdown_stats.items(), key=lambda x: x[1], reverse=True
             ):
                 print(f"- {category.capitalize()}: {count} pages")
+
+    def _process_results(self):
+        """
+        Process results from worker processes with improved shutdown detection.
+        """
+        last_progress_check = time.time()
+        last_urls_count = len(self.to_visit) + len(self.pending_urls)
+        worker_status = {}  # Track worker status
+        
+        while not self.stop_event.is_set() or not self.result_queue.empty():
+            try:
+                # Get a result (with timeout to allow checking stop_event)
+                try:
+                    result = self.result_queue.get(timeout=1)
+                except Empty:
+                    # Check if crawling is complete with more aggressive timing
+                    if (len(self.to_visit) == 0 and 
+                        len(self.pending_urls) == 0 and 
+                        self.task_queue.empty() and 
+                        self.result_queue.empty()):
+                        
+                        current_time = time.time()
+                        # Reduced wait time from 10s to 3s
+                        if current_time - self.last_activity_time > 3:
+                            print("Crawling appears complete - checking worker status...")
+                            
+                            # Check if all workers are idle
+                            active_count = 0
+                            idle_count = 0
+                            
+                            for worker_id, status in worker_status.items():
+                                if status.get("active", False):
+                                    active_count += 1
+                                    if status.get("idle_time", 0) > 5:  # Worker idle for 5+ seconds
+                                        idle_count += 1
+                            
+                            # If all active workers are idle, or no active workers
+                            if active_count == 0 or active_count == idle_count:
+                                print("All workers idle or finished. Shutting down...")
+                                self.stop_event.set()
+                                break
+                    
+                    continue
+                
+                # Special result types for worker status and shutdown coordination
+                if "status" in result:
+                    if result["status"] == "worker_status":
+                        # Update worker status tracking
+                        worker_id = result.get("worker_id")
+                        worker_status[worker_id] = {
+                            "active": True,
+                            "idle_time": result.get("idle_time", 0),
+                            "last_update": time.time()
+                        }
+                        continue
+                        
+                    elif result["status"] == "worker_shutdown":
+                        # Worker is shutting down
+                        worker_id = result.get("worker_id")
+                        print(f"Worker {worker_id} is shutting down: {result.get('reason')}")
+                        if worker_id in worker_status:
+                            worker_status[worker_id]["active"] = False
+                        continue
+                        
+                    elif result["status"] == "worker_shutdown_complete":
+                        # Worker has completed shutdown
+                        worker_id = result.get("worker_id")
+                        if worker_id in worker_status:
+                            del worker_status[worker_id]
+                        continue
+                
+                # Register response with rate controller for adaptive control
+                with self.rate_controller.lock:
+                    self.rate_controller.register_response(result)
+
+                # Process results based on status
+                if "status" in result and result["status"] == "success":
+                    self._handle_success_result(result)
+                elif "status" in result and result["status"] == "http_error":
+                    self._handle_http_error_result(result)
+                elif "status" in result and result["status"] == "skipped":
+                    self._handle_skipped_result(result)
+                elif "status" in result and result["status"] == "error":
+                    self._handle_error_result(result)
+
+                # Update activity timestamp on any result processing
+                self.last_activity_time = time.time()
+
+                # Check if we've reached the maximum pages
+                if (self.max_pages is not None and 
+                    self.pages_visited.value >= self.max_pages):
+                    print(f"Reached maximum pages limit ({self.max_pages})")
+                    self.stop_event.set()
+                    break
+
+                # Fill task queue if needed
+                self._fill_task_queue()
+
+            except Exception as e:
+                print(f"Error processing result: {e}")
+    
+    def checkpoint_loop(self):
+        """
+        Periodically save crawler state to checkpoint file.
+        Improved shutdown detection and coordination.
+        """
+        # Create a local flag to track shutdown initiation
+        shutdown_initiated = False
+        
+        while not self.stop_event.is_set():
+            try:
+                # Sleep for a short while to be more responsive to shutdown events
+                for _ in range(6):  # Check every 0.5 seconds (6 * 0.5s = 3s)
+                    if self.stop_event.is_set():
+                        break
+                    time.sleep(0.5)
+                
+                if self.stop_event.is_set():
+                    break
+
+                # Check if we should save a checkpoint
+                if self.checkpoint_manager.should_save_checkpoint(
+                    self.pages_visited.value
+                ):
+                    self._save_checkpoint()
+
+                # CRITICAL: Check if all workers are gone but we're still running
+                if self.worker_pool and self.worker_pool.active_workers_count() == 0:
+                    # If we have no active workers but the process is still running,
+                    # we may be stuck. Check for remaining URLs.
+                    if (len(self.to_visit) == 0 and 
+                        len(self.pending_urls) == 0 and 
+                        self.task_queue.empty() and 
+                        self.result_queue.empty()):
+                        
+                        if not shutdown_initiated:
+                            print("All workers have exited and no URLs remain. Initiating shutdown...")
+                            shutdown_initiated = True
+                        else:
+                            # If shutdown was already initiated but we're still here,
+                            # we need to force the issue
+                            print("Forced shutdown required - all workers gone but process still running")
+                            self.stop_event.set()
+                            self.is_running = False
+                            return  # Exit the checkpoint loop immediately
+
+                # Regular completion check
+                if (len(self.to_visit) == 0 and 
+                    len(self.pending_urls) == 0 and 
+                    self.task_queue.empty() and 
+                    self.result_queue.empty() and
+                    time.time() - self.last_activity_time > 5):
+                    
+                    # If shutdown was already initiated, force exit now
+                    if shutdown_initiated:
+                        print("Forced shutdown - process still running after shutdown initiated")
+                        self.stop_event.set()
+                        self.is_running = False
+                        return
+                    
+                    print("No more URLs to process. Saving final checkpoint...")
+                    self._save_checkpoint(force=True)
+
+                    print("Crawling complete. Initiating shutdown...")
+                    shutdown_initiated = True
+
+                    # Mark as controlled shutdown
+                    self.controlled_shutdown = True
+
+                    # Send exit signals to all active workers
+                    if self.worker_pool:
+                        active_count = self.worker_pool.active_workers_count()
+                        print(f"Sending exit signals to {active_count} active workers")
+                        for _ in range(active_count * 2):  # Send extra signals to ensure delivery
+                            try:
+                                self.task_queue.put(None)
+                            except:
+                                break
+
+                    # Set stop event
+                    self.stop_event.set()
+                    self.is_running = False
+                    break
+
+            except Exception as e:
+                print(f"Error in checkpoint loop: {e}")
+    
+    def stop(self):
+        """
+        Stop the crawling process gracefully with improved termination.
+        """
+        if not self.is_running:
+            print("Spider is not running")
+            return False
+
+        # Set stop event
+        self.stop_event.set()
+        self.is_running = False
+
+        print("Stopping spider, please wait...")
+
+        # Save final checkpoint
+        self._save_checkpoint(force=True)
+
+        # Send exit signal to each worker
+        num_workers = self.worker_pool.active_workers_count() if self.worker_pool else 0
+        print(f"Sending exit signals to {num_workers} active workers")
+        
+        # Send exit signals
+        for _ in range(num_workers * 2):  # Send extra signals to ensure delivery
+            try:
+                self.task_queue.put(None)
+            except:
+                break
+        
+        # Clear the task queue to prevent workers from getting new tasks
+        try:
+            while not self.task_queue.empty():
+                try:
+                    self.task_queue.get(block=False)
+                except:
+                    break
+        except:
+            pass
+
+        # Stop worker pool with reduced timeout
+        if self.worker_pool:
+            self.worker_pool.stop(timeout=3)
+
+        # Wait for threads to finish with reduced timeout
+        for thread in [self.result_thread, self.retry_thread, self.checkpoint_thread]:
+            if thread and thread.is_alive():
+                thread.join(timeout=3)
+                
+        # Force close multiprocessing resources if needed (NEW)
+        # This ensures that no resources are left hanging
+        try:
+            if hasattr(self, 'result_queue') and hasattr(self.result_queue, 'close'):
+                self.result_queue.close()
+                
+            if hasattr(self, 'task_queue') and hasattr(self.task_queue, 'close'):
+                self.task_queue.close()
+                
+            if hasattr(self, 'retry_queue') and hasattr(self.retry_queue, 'close'):
+                self.retry_queue.close()
+        except:
+            pass
+
+        print("Spider stopped")
+
+        # Print summary
+        self._print_summary()
+
+        return True

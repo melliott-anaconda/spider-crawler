@@ -173,32 +173,6 @@ class WorkerPool:
         print(f"Started worker {worker_id} with delay={self.current_delay.value:.2f}s using {self.browser_engine} engine")
         return worker_id
 
-    def stop(self, timeout=5):
-        """
-        Stop all worker processes.
-
-        Args:
-            timeout: Timeout for joining processes
-        """
-        self.is_running = False
-        self.stop_event.set()
-
-        # Send exit signal to all workers
-        for _ in range(len(self.workers)):
-            self.task_queue.put(None)
-
-        # Wait for workers to finish
-        for worker in self.workers:
-            worker.stop(timeout=timeout)
-
-        # Clear worker lists
-        self.workers = []
-        self.worker_processes = {}
-
-        # Wait for monitor thread to finish
-        if self.monitor_thread and self.monitor_thread.is_alive():
-            self.monitor_thread.join(timeout=timeout)
-
     def adjust_worker_count(self):
         """
         Adjust the number of workers based on target worker count.
@@ -241,8 +215,6 @@ class WorkerPool:
 
             for _ in range(to_start):
                 self.start_new_worker()
-
-    def _monitor_workers(self):
         """
         Monitor worker processes and adjust as needed.
         """
@@ -303,3 +275,151 @@ class WorkerPool:
         """
         alive_workers = [w for w in self.workers if w.is_alive()]
         return len(alive_workers)
+
+    def stop(self, timeout=3):  # Reduced timeout from 5s to 3s
+        """
+        Stop all worker processes with improved termination.
+        """
+        self.is_running = False
+        self.stop_event.set()
+
+        # Quick check for any active workers
+        alive_workers = [w for w in self.workers if w.is_alive()]
+        if not alive_workers:
+            print("No active workers to stop")
+            return
+
+        print(f"Stopping {len(alive_workers)} worker processes")
+
+        # Clear the task queue to prevent workers from getting stuck on new tasks
+        try:
+            while not self.task_queue.empty():
+                try:
+                    self.task_queue.get(block=False)
+                except:
+                    break
+        except:
+            pass
+
+        # Send exit signal to each worker (more than needed to ensure delivery)
+        for _ in range(len(alive_workers) * 2):
+            try:
+                self.task_queue.put(None)
+            except:
+                break
+
+        # First, try graceful shutdown with a short timeout
+        graceful_timeout = min(1.0, timeout / 3)
+        start_time = time.time()
+        
+        while time.time() - start_time < graceful_timeout:
+            alive_workers = [w for w in self.workers if w.is_alive()]
+            if not alive_workers:
+                break
+            time.sleep(0.1)
+            
+        # For any remaining workers, stop them individually
+        for worker in self.workers:
+            if worker.is_alive():
+                worker.stop(timeout=max(0.5, timeout/2))
+
+        # Clear worker lists
+        self.workers = []
+        self.worker_processes = {}
+
+        # Wait for monitor thread to finish (reduced timeout)
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            self.monitor_thread.join(timeout=1.0)
+            
+    # Modified _monitor_workers method with improved shutdown detection
+    def _monitor_workers(self):
+        """
+        Monitor worker processes and adjust as needed.
+        Improved termination and shutdown detection.
+        """
+        check_interval = 2.0  # Reduced from 5.0 to 2.0 seconds
+        
+        while not self.stop_event.is_set() and self.spider.is_running:
+            try:
+                # Check for completed or dead workers
+                alive_workers = [w for w in self.workers if w.is_alive()]
+
+                # If some workers died unexpectedly, remove them from our list
+                if len(alive_workers) != len(self.workers):
+                    # Only treat as unexpected death if we're not in controlled shutdown
+                    if not self.spider.controlled_shutdown:
+                        print(
+                            f"Some workers died unexpectedly. Alive: {len(alive_workers)}/{len(self.workers)}"
+                        )
+                        self.workers = alive_workers
+                    else:
+                        # In controlled shutdown, just update the list
+                        self.workers = alive_workers
+
+                # Check if we need to adjust worker count based on rate controller
+                target = self.target_workers.value
+                current_count = len(alive_workers)
+
+                # Only adjust if not in controlled shutdown
+                if current_count != target and not self.spider.controlled_shutdown:
+                    self.adjust_worker_count()
+
+                # Update current delay value from rate controller
+                with self.rate_controller.lock:
+                    new_delay = self.rate_controller.current_delay
+                    if abs(new_delay - self.current_delay.value) > 0.1:
+                        self.current_delay.value = new_delay
+                        print(f"Updated shared delay value to {new_delay:.2f}s")
+
+                # Process retry queue
+                self._process_retry_queue()
+                
+                # Check if all workers are idle (all URLs processed)
+                # This helps detect completion earlier
+                if (len(alive_workers) > 0 and 
+                    self.task_queue.empty() and 
+                    len(self.spider.to_visit) == 0 and 
+                    len(self.spider.pending_urls) == 0):
+                    
+                    # Update spider's last activity time to help with shutdown detection
+                    current_time = time.time()
+                    time_since_activity = current_time - self.spider.last_activity_time
+                    
+                    if time_since_activity > 5:  # If already idle for 5+ seconds
+                        print("All workers appear idle and no URLs remain. Signaling potential completion.")
+                        # This will help the main process detect completion faster
+                        pass
+
+                # Wait before next check (using shorter interval)
+                time.sleep(check_interval)
+
+            except Exception as e:
+                print(f"Error in worker monitor thread: {e}")
+                time.sleep(check_interval)  # Use same interval on error
+
+    # New method to check if all workers are idle
+    def are_all_workers_idle(self, idle_threshold=5):
+        """
+        Check if all workers appear to be idle.
+        
+        Args:
+            idle_threshold: Number of seconds of inactivity to consider a worker idle
+            
+        Returns:
+            bool: True if all workers appear idle or no workers exist
+        """
+        alive_workers = [w for w in self.workers if w.is_alive()]
+        
+        if not alive_workers:
+            return True
+            
+        # If there are active workers but no URLs to process,
+        # and we haven't had activity recently, consider them idle
+        if (self.task_queue.empty() and 
+            len(self.spider.to_visit) == 0 and 
+            len(self.spider.pending_urls) == 0 and
+            time.time() - self.spider.last_activity_time > idle_threshold):
+            
+            return True
+            
+        return False
