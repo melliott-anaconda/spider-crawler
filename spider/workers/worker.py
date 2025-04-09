@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
 # Import the browser factory
-from ..browser import create_browser, wait_for_spa_content, extract_links, execute_browser_script
+from ..browser import create_browser, wait_for_spa_content, extract_links, execute_browser_script, clean_cookie_elements
 from ..content.extractor import search_page_for_keywords
 from ..content.markdown import html_to_markdown, save_markdown_file
 from ..content.parser import determine_page_category
@@ -403,26 +403,27 @@ def worker_process(
                         # Navigate to URL
                         browser.get(url)
 
-                        if hasattr(browser, 'evaluate'):
-                            try:
-                                is_loaded = execute_browser_script(browser, "() => document.readyState === 'complete'")
-                                dom_elements = execute_browser_script(browser, "() => document.body.children.length")
-                                print(f"Page loaded: {is_loaded}, DOM elements: {dom_elements}")
-                                
-                                # Check for SPA frameworks
-                                frameworks = execute_browser_script(browser, """
-                                    () => {
-                                        const detections = [];
-                                        if (window.React || document.querySelector('[data-reactroot]')) detections.push('React');
-                                        if (window.angular || document.querySelector('[ng-app]')) detections.push('Angular');
-                                        if (window.Vue || document.querySelector('[data-v-]')) detections.push('Vue');
-                                        return detections.join(', ') || 'None detected';
-                                    }
-                                """)
-                                print(f"Detected frameworks: {frameworks}")
-                            except Exception as e:
-                                print(f"Error checking page load: {e}")
-                        
+                        try:
+                            is_loaded = execute_browser_script(browser, "() => document.readyState === 'complete'")
+                            dom_elements = execute_browser_script(browser, "() => document.body.children.length")
+                            print(f"Page loaded: {is_loaded}, DOM elements: {dom_elements}")
+                            
+                            # Check for SPA frameworks
+                            frameworks = execute_browser_script(browser, """
+                                () => {
+                                    const detections = [];
+                                    if (window.React || document.querySelector('[data-reactroot]')) detections.push('React');
+                                    if (window.angular || document.querySelector('[ng-app]')) detections.push('Angular');
+                                    if (window.Vue || document.querySelector('[data-v-]')) detections.push('Vue');
+                                    return detections.join(', ') || 'None detected';
+                                }
+                            """)
+                            print(f"Detected frameworks: {frameworks}")
+                        except Exception as e:
+                            print(f"Error checking page load: {e}")
+                    
+                        clean_cookie_elements(browser)
+
                         blocked_content = execute_browser_script(browser, """
                             () => {
                                 const checks = [];
