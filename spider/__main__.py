@@ -6,8 +6,7 @@ This module provides the main entry point for running the crawler
 from the command line.
 """
 import os
-import signal
-import threading
+
 import sys
 import time
 import traceback
@@ -58,9 +57,10 @@ def main():
                     pass
 
     # Start the emergency exit timer thread
+    import threading
     exit_timer = threading.Thread(target=force_exit_timer, daemon=True)
     exit_timer.start()
-    
+
     try:
         # Parse command-line arguments
         args = parse_args()

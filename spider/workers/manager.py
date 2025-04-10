@@ -330,73 +330,89 @@ class WorkerPool:
         # Wait for monitor thread to finish (reduced timeout)
         if self.monitor_thread and self.monitor_thread.is_alive():
             self.monitor_thread.join(timeout=1.0)
-            
-    # Modified _monitor_workers method with improved shutdown detection
+
     def _monitor_workers(self):
         """
         Monitor worker processes and adjust as needed.
-        Improved termination and shutdown detection.
+        With improved shutdown handling.
         """
-        check_interval = 2.0  # Reduced from 5.0 to 2.0 seconds
+        print(f"Monitor thread starting. Stop event: {self.stop_event.is_set()}, Spider running: {self.spider.is_running}")
         
-        while not self.stop_event.is_set() and self.spider.is_running:
+        check_interval = 2.0
+        zero_workers_time = None
+        shutdown_initiated_time = None
+        
+        # Continue monitoring even if spider.is_running is false
+        while not self.stop_event.is_set() and (self.spider.is_running or len(self.workers) > 0):
             try:
                 # Check for completed or dead workers
                 alive_workers = [w for w in self.workers if w.is_alive()]
 
-                # If some workers died unexpectedly, remove them from our list
-                if len(alive_workers) != len(self.workers):
-                    # Only treat as unexpected death if we're not in controlled shutdown
-                    if not self.spider.controlled_shutdown:
-                        print(
-                            f"Some workers died unexpectedly. Alive: {len(alive_workers)}/{len(self.workers)}"
-                        )
-                        self.workers = alive_workers
-                    else:
-                        # In controlled shutdown, just update the list
-                        self.workers = alive_workers
-
-                # Check if we need to adjust worker count based on rate controller
-                target = self.target_workers.value
-                current_count = len(alive_workers)
-
-                # Only adjust if not in controlled shutdown
-                if current_count != target and not self.spider.controlled_shutdown:
-                    self.adjust_worker_count()
-
-                # Update current delay value from rate controller
-                with self.rate_controller.lock:
-                    new_delay = self.rate_controller.current_delay
-                    if abs(new_delay - self.current_delay.value) > 0.1:
-                        self.current_delay.value = new_delay
-                        print(f"Updated shared delay value to {new_delay:.2f}s")
-
-                # Process retry queue
-                self._process_retry_queue()
+                # If all workers are gone, track when this happened
+                if len(alive_workers) == 0 and len(self.workers) > 0:
+                    if zero_workers_time is None:
+                        zero_workers_time = time.time()
+                        print(f"All workers have exited at {time.strftime('%H:%M:%S')}")
+                    
+                    # After 5 seconds of zero workers, initiate graceful shutdown
+                    elapsed = time.time() - zero_workers_time
+                    if elapsed >= 5 and shutdown_initiated_time is None:
+                        print(f"All workers gone for {elapsed:.1f}s. Initiating graceful shutdown.")
+                        shutdown_initiated_time = time.time()
+                        
+                        # Try graceful shutdown first
+                        self.stop_event.set()
+                        if hasattr(self.spider, 'is_running'):
+                            self.spider.is_running = False
+                        if hasattr(self.spider, 'stop_event') and hasattr(self.spider.stop_event, 'set'):
+                            self.spider.stop_event.set()
+                        
+                        # Print summary here before potential forced exit
+                        if hasattr(self.spider, '_print_summary') and callable(self.spider._print_summary):
+                            try:
+                                print("\nPrinting crawl summary before exit:")
+                                self.spider._print_summary()
+                                # Force flush stdout to ensure summary is displayed
+                                import sys
+                                sys.stdout.flush()
+                            except Exception as e:
+                                print(f"Error printing summary: {e}")
+                        
+                        # Save checkpoint if possible
+                        if hasattr(self.spider, '_save_checkpoint') and callable(self.spider._save_checkpoint):
+                            try:
+                                self.spider._save_checkpoint(force=True)
+                            except Exception as e:
+                                print(f"Error saving checkpoint: {e}")
+                    
+                    # If graceful shutdown doesn't complete within 8 more seconds, force exit
+                    if shutdown_initiated_time is not None:
+                        shutdown_elapsed = time.time() - shutdown_initiated_time
+                        
+                        # At 8 seconds, force exit
+                        if shutdown_elapsed >= 8:
+                            print(f"Graceful shutdown not completing after {shutdown_elapsed:.1f}s. Forcing exit.")
+                            print("Goodbye!")
+                            # Flush stdout to ensure all messages are displayed
+                            import sys
+                            sys.stdout.flush()
+                            # Give a moment for output to flush
+                            time.sleep(0.5)
+                            import os
+                            os._exit(0)
+                else:
+                    # Reset zero workers time if we have workers
+                    zero_workers_time = None
+                    
+                # Process other monitoring tasks as normal...
                 
-                # Check if all workers are idle (all URLs processed)
-                # This helps detect completion earlier
-                if (len(alive_workers) > 0 and 
-                    self.task_queue.empty() and 
-                    len(self.spider.to_visit) == 0 and 
-                    len(self.spider.pending_urls) == 0):
-                    
-                    # Update spider's last activity time to help with shutdown detection
-                    current_time = time.time()
-                    time_since_activity = current_time - self.spider.last_activity_time
-                    
-                    if time_since_activity > 5:  # If already idle for 5+ seconds
-                        print("All workers appear idle and no URLs remain. Signaling potential completion.")
-                        # This will help the main process detect completion faster
-                        pass
-
-                # Wait before next check (using shorter interval)
                 time.sleep(check_interval)
 
             except Exception as e:
                 print(f"Error in worker monitor thread: {e}")
-                time.sleep(check_interval)  # Use same interval on error
-
+                time.sleep(check_interval)
+                
+        print("Worker monitor thread exiting.")
     # New method to check if all workers are idle
     def are_all_workers_idle(self, idle_threshold=5):
         """
