@@ -222,8 +222,8 @@ def worker_process(
 
     # Track if we've ever received a URL
     received_url = False
-    startup_timeout = 10  # Reduced from 120s to 10s
-    idle_timeout = 10     # Reduced from 300s to 10s
+    startup_timeout = 20  # Reduced from 120s to 20s
+    idle_timeout = 20     # Reduced from 300s to 20s
 
     # Increment active workers counter
     if active_workers_lock and active_workers:
