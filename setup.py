@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="spider-crawler",
-    version="1.1.7",
+    version="1.1.8",
     description="A flexible web crawler for keyword searching and content extraction",
     author="Michael Elliott",
     author_email="melliott@anaconda.com",

@@ -5,7 +5,7 @@ This package provides a flexible and powerful web crawler for
 searching websites for keywords or saving content as markdown.
 """
 
-__version__ = "1.1.7"
+__version__ = "1.1.8"
 __author__ = "Michael Elliott"
 
 from .content.filter import ContentFilter
