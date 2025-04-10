@@ -264,10 +264,16 @@ def worker_process(
         try:
             if "browser" in locals() and browser:
                 browser.quit()
-        except:
-            pass
-        sys.exit(0)
+        except Exception as e:
+            print(f"Worker {worker_id} browser quit error: {e}")
+        
+        # Don't call sys.exit() here, just break out of the main loop
+        nonlocal received_exit_signal
+        received_exit_signal = True
 
+    # Add a flag to track if we received an exit signal
+    received_exit_signal = False
+    
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
@@ -280,6 +286,10 @@ def worker_process(
     
     try:
         while True:
+            # Check exit signal at the start of the loop
+            if received_exit_signal:
+                print(f"Worker {worker_id} exiting due to signal")
+                break
             try:
                 # Report worker status periodically
                 current_time = time.time()

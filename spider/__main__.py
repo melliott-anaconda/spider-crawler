@@ -124,6 +124,15 @@ def main():
         spider.rate_controller.max_delay = config.max_delay
         spider.rate_controller.aggressive_throttling = config.aggressive_throttling
 
+        # Create a timeout for the whole process
+        def emergency_timeout():
+            time.sleep(15)  # Give a reasonable amount of time for shutdown
+            print("Emergency timeout reached. Forcing exit.")
+            os._exit(0)
+        
+        emergency_thread = threading.Thread(target=emergency_timeout, daemon=True)
+        emergency_thread.start()
+
         # Start the spider
         try:
             spider.start(
@@ -274,6 +283,11 @@ def main():
                                 break
                     except:
                         pass
+                
+                # If process is still running after 5 more seconds, force exit
+                time.sleep(5)
+                print("Forcing exit after stop attempt")
+                os._exit(0)
 
         return 0
 

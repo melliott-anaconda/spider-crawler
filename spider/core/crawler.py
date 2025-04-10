@@ -171,84 +171,6 @@ class Spider:
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
-    def resume_from_checkpoint(self):
-        """
-        Resume crawling from a checkpoint.
-
-        Returns:
-            bool: True if successfully resumed from checkpoint, False otherwise
-        """
-        checkpoint_data = self.checkpoint_manager.load_checkpoint()
-
-        if not checkpoint_data:
-            print("No checkpoint found, starting fresh")
-            return False
-
-        try:
-            # Restore visited URLs
-            self.visited[:] = checkpoint_data.get("visited", [])
-
-            # Restore URLs to visit (including pending ones for safety)
-            pending_from_checkpoint = checkpoint_data.get("pending_urls", [])
-            self.to_visit[:] = pending_from_checkpoint + checkpoint_data.get(
-                "to_visit", []
-            )
-
-            # Start with empty pending list
-            self.pending_urls[:] = []
-
-            # Restore visited pages counter
-            with self.pages_visited_lock:
-                self.pages_visited.value = checkpoint_data.get("pages_visited", 0)
-
-            # Restore URL cache
-            for url in self.visited:
-                self.url_cache[url] = True
-            for url in self.to_visit:
-                self.url_cache[url] = True
-
-            # Restore rate controller state if available
-            if "rate_controller" in checkpoint_data:
-                with self.rate_controller.lock:
-                    self.rate_controller.from_checkpoint(
-                        checkpoint_data.get("rate_controller", {})
-                    )
-                    # Update the shared values
-                    current_settings = self.rate_controller.get_current_settings()
-                    self.current_delay.value = current_settings["current_delay"]
-                    self.target_workers.value = current_settings["target_workers"]
-
-            # Restore retry counts
-            if "retry_counts" in checkpoint_data:
-                self.retry_counts.update(checkpoint_data.get("retry_counts", {}))
-
-            # Restore markdown stats if available
-            if "markdown_stats" in checkpoint_data and self.markdown_mode:
-                self.markdown_stats.update(checkpoint_data.get("markdown_stats", {}))
-
-            # Restore seen results to avoid duplicates
-            if not self.markdown_mode and os.path.exists(self.output_file):
-                with open(self.output_file, "r", newline="", encoding="utf-8") as f:
-                    reader = csv.reader(f, delimiter="|")
-                    next(reader)  # Skip header
-                    for row in reader:
-                        if len(row) >= 3:
-                            key = (row[0], row[1], row[2])
-                            self.seen_results[str(key)] = True
-
-            print(
-                f"Resumed from checkpoint: {len(self.visited)} visited URLs, {len(self.to_visit)} URLs to visit"
-            )
-            print(
-                f"Current settings: {self.target_workers.value} workers, {self.current_delay.value:.2f}s delay"
-            )
-
-            return True
-
-        except Exception as e:
-            print(f"Error resuming from checkpoint: {e}")
-            return False
-
     def start(
         self,
         resume=False,
@@ -354,6 +276,112 @@ class Spider:
 
         return True
 
+    def resume_from_checkpoint(self):
+        """
+        Resume crawling from a checkpoint.
+
+        Returns:
+            bool: True if successfully resumed from checkpoint, False otherwise
+        """
+        checkpoint_data = self.checkpoint_manager.load_checkpoint()
+
+        if not checkpoint_data:
+            print("No checkpoint found, starting fresh")
+            return False
+
+        try:
+            # Restore visited URLs
+            self.visited[:] = checkpoint_data.get("visited", [])
+
+            # Restore URLs to visit (including pending ones for safety)
+            pending_from_checkpoint = checkpoint_data.get("pending_urls", [])
+            
+            # Handle both old-style (url string only) and new-style (url, depth) formats
+            to_visit_list = []
+            for item in checkpoint_data.get("to_visit", []):
+                if isinstance(item, tuple) and len(item) == 2:
+                    # This is already in the new (url, depth) format
+                    to_visit_list.append(item)
+                else:
+                    # This is in the old format (url string only), add depth 0
+                    to_visit_list.append((item, 0))
+                    
+            # Do the same for pending URLs
+            pending_list = []
+            for item in pending_from_checkpoint:
+                if isinstance(item, tuple) and len(item) == 2:
+                    pending_list.append(item)
+                else:
+                    pending_list.append((item, 0))
+                    
+            # Update the to_visit list
+            self.to_visit[:] = pending_list + to_visit_list
+
+            # Start with empty pending list
+            self.pending_urls[:] = []
+
+            # Restore visited pages counter
+            with self.pages_visited_lock:
+                self.pages_visited.value = checkpoint_data.get("pages_visited", 0)
+
+            # Restore URL cache - ensure it uses strings as keys, not tuples or lists
+            self.url_cache.clear()  # Clear existing cache
+            
+            # Add visited URLs to cache (with depth 0 if not specified)
+            for url in self.visited:
+                self.url_cache[url] = 0
+                
+            # Add URLs to visit to cache with their depth
+            for url_info in self.to_visit:
+                if isinstance(url_info, tuple) and len(url_info) == 2:
+                    url, depth = url_info
+                    self.url_cache[url] = depth
+                else:
+                    self.url_cache[url_info] = 0
+
+            # Restore rate controller state if available
+            if "rate_controller" in checkpoint_data:
+                with self.rate_controller.lock:
+                    self.rate_controller.from_checkpoint(
+                        checkpoint_data.get("rate_controller", {})
+                    )
+                    # Update the shared values
+                    current_settings = self.rate_controller.get_current_settings()
+                    self.current_delay.value = current_settings["current_delay"]
+                    self.target_workers.value = current_settings["target_workers"]
+
+            # Restore retry counts
+            if "retry_counts" in checkpoint_data:
+                self.retry_counts.update(checkpoint_data.get("retry_counts", {}))
+
+            # Restore markdown stats if available
+            if "markdown_stats" in checkpoint_data and self.markdown_mode:
+                self.markdown_stats.update(checkpoint_data.get("markdown_stats", {}))
+
+            # Restore seen results to avoid duplicates
+            if not self.markdown_mode and os.path.exists(self.output_file):
+                with open(self.output_file, "r", newline="", encoding="utf-8") as f:
+                    reader = csv.reader(f, delimiter="|")
+                    next(reader)  # Skip header
+                    for row in reader:
+                        if len(row) >= 3:
+                            key = (row[0], row[1], row[2])
+                            self.seen_results[str(key)] = True
+
+            print(
+                f"Resumed from checkpoint: {len(self.visited)} visited URLs, {len(self.to_visit)} URLs to visit"
+            )
+            print(
+                f"Current settings: {self.target_workers.value} workers, {self.current_delay.value:.2f}s delay"
+            )
+
+            return True
+
+        except Exception as e:
+            print(f"Error resuming from checkpoint: {e}")
+            return False
+
+
     def _fill_task_queue(self):
         """
         Fill the task queue with URLs from to_visit.
@@ -371,12 +399,12 @@ class Spider:
                 url_info = self.to_visit.pop(0)
                 
                 # Handle both tuple format (url, depth) and string format for backward compatibility
-                if isinstance(url_info, tuple):
+                if isinstance(url_info, tuple) and len(url_info) == 2:
                     url, depth = url_info
                 else:
                     url = url_info
-                    depth = self.url_cache.get(url, 0)
-
+                    depth = 0  # Default to depth 0 for old format
+                    
                 # Skip if already visited
                 if url in self.visited:
                     continue
@@ -384,7 +412,7 @@ class Spider:
                 # Add to pending list
                 self.pending_urls.append((url, depth))
 
-                # Add to task queue - workers only need the URL
+                # Add to task queue - workers need both URL and depth
                 self.task_queue.put((url, depth))
                 added += 1
 
@@ -419,7 +447,7 @@ class Spider:
                         "No URLs in queue and none pending. Crawling may be complete."
                     )
                     # We don't call stop() here - monitoring threads will handle shutdown
-
+                    
     def _check_startup_progress(self):
         """
         Check if the crawler is making progress after startup.
@@ -805,11 +833,30 @@ class Spider:
             bool: True if checkpoint was saved, False otherwise
         """
         try:
+            # Convert to_visit and pending_urls to serializable format if needed
+            to_visit_serializable = []
+            for item in self.to_visit:
+                if isinstance(item, tuple) and len(item) == 2:
+                    # Already in (url, depth) format
+                    to_visit_serializable.append(item)
+                else:
+                    # Convert to (url, 0) format
+                    to_visit_serializable.append((item, 0))
+                    
+            pending_urls_serializable = []
+            for item in self.pending_urls:
+                if isinstance(item, tuple) and len(item) == 2:
+                    # Already in (url, depth) format
+                    pending_urls_serializable.append(item)
+                else:
+                    # Convert to (url, 0) format
+                    pending_urls_serializable.append((item, 0))
+
             # Prepare checkpoint data
             checkpoint_data = {
                 "visited": list(self.visited),
-                "to_visit": list(self.to_visit),
-                "pending_urls": list(self.pending_urls),
+                "to_visit": to_visit_serializable,
+                "pending_urls": pending_urls_serializable,
                 "pages_visited": self.pages_visited.value,
                 "retry_counts": dict(self.retry_counts),
                 "last_activity_time": self.last_activity_time,
@@ -843,7 +890,7 @@ class Spider:
         except Exception as e:
             print(f"Error saving checkpoint: {e}")
             return False
-
+        
     def _print_summary(self):
         """Print a summary of the crawl results."""
         with self.rate_controller.lock:
@@ -1051,7 +1098,7 @@ class Spider:
     
     def stop(self):
         """
-        Stop the crawling process gracefully with improved termination.
+        Stop the crawling process gracefully with improved signal handling.
         """
         if not self.is_running:
             print("Spider is not running")
@@ -1066,49 +1113,41 @@ class Spider:
         # Save final checkpoint
         self._save_checkpoint(force=True)
 
-        # Send exit signal to each worker
-        num_workers = self.worker_pool.active_workers_count() if self.worker_pool else 0
-        print(f"Sending exit signals to {num_workers} active workers")
-        
-        # Send exit signals
-        for _ in range(num_workers * 2):  # Send extra signals to ensure delivery
-            try:
-                self.task_queue.put(None)
-            except:
-                break
-        
-        # Clear the task queue to prevent workers from getting new tasks
-        try:
-            while not self.task_queue.empty():
-                try:
-                    self.task_queue.get(block=False)
-                except:
-                    break
-        except:
-            pass
-
-        # Stop worker pool with reduced timeout
+        # Send exit signal to each worker with a cleaner approach
         if self.worker_pool:
-            self.worker_pool.stop(timeout=3)
-
-        # Wait for threads to finish with reduced timeout
+            num_workers = self.worker_pool.active_workers_count() 
+            if num_workers > 0:
+                print(f"Sending exit signals to {num_workers} active workers")
+                
+                # Put just enough None values in the queue
+                for _ in range(num_workers):
+                    try:
+                        self.task_queue.put(None, block=False)
+                    except:
+                        break
+        
+        # Add a timeout for graceful shutdown
+        shutdown_start = time.time()
+        max_shutdown_wait = 10  # seconds
+        
+        # Wait briefly for workers to start shutting down
+        time.sleep(1)
+        
+        # Stop worker pool with a shorter timeout
+        if self.worker_pool:
+            self.worker_pool.stop(timeout=2)
+        
+        # Wait for threads with timeout
         for thread in [self.result_thread, self.retry_thread, self.checkpoint_thread]:
             if thread and thread.is_alive():
-                thread.join(timeout=3)
-                
-        # Force close multiprocessing resources if needed (NEW)
-        # This ensures that no resources are left hanging
-        try:
-            if hasattr(self, 'result_queue') and hasattr(self.result_queue, 'close'):
-                self.result_queue.close()
-                
-            if hasattr(self, 'task_queue') and hasattr(self.task_queue, 'close'):
-                self.task_queue.close()
-                
-            if hasattr(self, 'retry_queue') and hasattr(self.retry_queue, 'close'):
-                self.retry_queue.close()
-        except:
-            pass
+                thread.join(timeout=2)
+        
+        # Force terminate if shutdown is taking too long
+        if time.time() - shutdown_start > max_shutdown_wait:
+            print("Shutdown taking too long. Forcing termination.")
+            # Force process to exit
+            import os
+            os._exit(0)
 
         print("Spider stopped")
 
