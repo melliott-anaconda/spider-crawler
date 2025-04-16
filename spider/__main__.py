@@ -124,10 +124,31 @@ def main():
         spider.rate_controller.max_delay = config.max_delay
         spider.rate_controller.aggressive_throttling = config.aggressive_throttling
 
-        # Create a timeout for the whole process
+        shutdown_in_progress = False
+        emergency_exit_needed = False
+        
         def emergency_timeout():
-            time.sleep(15)  # Give a reasonable amount of time for shutdown
+            # Wait for shutdown to be initiated
+            while not shutdown_in_progress:
+                time.sleep(0.5)
+                # Exit early if main thread is done
+                if not threading.main_thread().is_alive():
+                    return
+                    
+            # Now that shutdown is in progress, set a deadline
+            print("Emergency timeout thread: shutdown in progress, setting deadline")
+            deadline = time.time() + 15  # 15 seconds to complete shutdown
+            
+            # Wait until either shutdown completes or deadline is reached
+            while time.time() < deadline:
+                time.sleep(0.5)
+                # Exit if main thread is done
+                if not threading.main_thread().is_alive():
+                    return
+                    
+            # If we reach here, the deadline was exceeded
             print("Emergency timeout reached. Forcing exit.")
+            emergency_exit_needed = True
             os._exit(0)
         
         emergency_thread = threading.Thread(target=emergency_timeout, daemon=True)
@@ -235,7 +256,9 @@ def main():
                         # Update for next check
                         last_check_time = current_time
                         last_urls_count = current_urls_count
-
+        except KeyboardInterrupt:
+            print("\nReceived keyboard interrupt. Stopping...")
+            shutdown_in_progress = True  # Signal that shutdown has started
         finally:
             # Ensure spider is stopped properly with timeout
             if spider.is_running:
@@ -284,10 +307,19 @@ def main():
                     except:
                         pass
                 
-                # If process is still running after 5 more seconds, force exit
-                time.sleep(5)
-                print("Forcing exit after stop attempt")
-                os._exit(0)
+                # Add a reasonable timeout for natural completion
+                if not emergency_exit_needed:
+                    deadline = time.time() + 5
+                    while time.time() < deadline:
+                        time.sleep(0.1)
+                        # Check if emergency exit is now needed
+                        if emergency_exit_needed:
+                            break
+                    
+                    # Force exit only if we haven't already triggered emergency exit
+                    if not emergency_exit_needed:
+                        print("Forcing exit after stop attempt")
+                        os._exit(0)
 
         return 0
 
